@@ -1470,17 +1470,21 @@ static bool IsGunslingerTestBotName( CTFPlayer *pBot )
 //-----------------------------------------------------------------------------
 // Purpose:
 //-----------------------------------------------------------------------------
+bool BotShouldUseGunslingerTestItem( CTFPlayer *pBot )
+{
+	return IsGunslingerTestBotName( pBot );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose:
+//-----------------------------------------------------------------------------
 void BotEquipGunslingerTestItem( CTFPlayer *pBot )
 {
-	if ( !IsGunslingerTestBotName( pBot ) )
+	if ( !BotShouldUseGunslingerTestItem( pBot ) )
 		return;
 
-	// Force them to be Engineer first, since the Gunslinger only makes sense there.
 	if ( pBot->GetPlayerClass()->GetClassIndex() != TF_CLASS_ENGINEER )
-	{
-		pBot->AllowInstantSpawn();
-		pBot->HandleCommand_JoinClass( "engineer" );
-	}
+		return;
 
 	// Remove the existing melee weapon before giving the Gunslinger.
 	CBaseCombatWeapon *pMeleeWeapon = pBot->Weapon_GetSlot( TF_WPN_TYPE_MELEE );
