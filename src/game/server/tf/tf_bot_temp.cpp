@@ -1457,6 +1457,49 @@ void BotGenerateAndWearItem( CTFPlayer *pBot, CEconItemView *pItem )
 }
 
 //-----------------------------------------------------------------------------
+// Purpose:
+//-----------------------------------------------------------------------------
+static bool IsGunslingerTestBotName( CTFPlayer *pBot )
+{
+	if ( !pBot )
+		return false;
+
+	return Q_strnicmp( pBot->GetPlayerName(), "GunSlinger", 10 ) == 0;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose:
+//-----------------------------------------------------------------------------
+void BotEquipGunslingerTestItem( CTFPlayer *pBot )
+{
+	if ( !IsGunslingerTestBotName( pBot ) )
+		return;
+
+	// Force them to be Engineer first, since the Gunslinger only makes sense there.
+	if ( pBot->GetPlayerClass()->GetClassIndex() != TF_CLASS_ENGINEER )
+	{
+		pBot->AllowInstantSpawn();
+		pBot->HandleCommand_JoinClass( "engineer" );
+	}
+
+	// Remove the existing melee weapon before giving the Gunslinger.
+	CBaseCombatWeapon *pMeleeWeapon = pBot->Weapon_GetSlot( TF_WPN_TYPE_MELEE );
+	if ( pMeleeWeapon )
+	{
+		pBot->Weapon_Detach( pMeleeWeapon );
+		UTIL_Remove( pMeleeWeapon );
+	}
+
+	BotGenerateAndWearItem( pBot, "The Gunslinger" );
+
+	TFPlayerClassData_t *pData = pBot->GetPlayerClass()->GetData();
+	if ( pData )
+	{
+		pBot->ManageBuilderWeapons( pData );
+	}
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
 void BotMirrorPlayerClassAndItems( CTFPlayer *pBot, CTFPlayer *pPlayer )

@@ -271,6 +271,7 @@ void CreateBotName( int iTeam, int iClassIndex, CTFBot::DifficultyType skill, ch
 	Q_strncpy( pBuffer, name.Access(), iBufferSize );
 }
 
+void BotEquipGunslingerTestItem( CTFPlayer *pBot );
 
 //-----------------------------------------------------------------------------------------------------
 CON_COMMAND_F( tf_bot_add, "Add a bot.", FCVAR_GAMEDLL )
@@ -371,6 +372,8 @@ CON_COMMAND_F( tf_bot_add, "Add a bot.", FCVAR_GAMEDLL )
 			// if no class is set, auto-select one
 			const char *thisClassname = classname ? classname : pBot->GetNextSpawnClassname();
 			pBot->HandleCommand_JoinClass( thisClassname );
+
+			BotEquipGunslingerTestItem( pBot );
 
 			++iNumAdded;
 		}
