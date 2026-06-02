@@ -66,6 +66,58 @@ ActionResult< CTFBot >	CTFBotEngineerBuilding::OnStart( CTFBot *me, Action< CTFB
 
 
 //---------------------------------------------------------------------------------------------
+// Attack the current target of our mini-sentry, but do not chase too far away from it.
+bool CTFBotEngineerBuilding::TryAttackMiniSentryTarget( CTFBot *me, CObjectSentrygun *mySentry )
+{
+	if ( !me || !mySentry || !mySentry->IsMiniBuilding() )
+		return false;
+
+	CBaseEntity *targetEntity = mySentry->GetTarget();
+	CTFPlayer *targetPlayer = ToTFPlayer( targetEntity );
+
+	if ( !targetPlayer || !targetPlayer->IsAlive() )
+		return false;
+
+	if ( targetPlayer->GetTeamNumber() == me->GetTeamNumber() )
+		return false;
+
+	const float assistRange = 512.0f;
+	Vector toTarget = targetPlayer->WorldSpaceCenter() - me->WorldSpaceCenter();
+
+	if ( toTarget.LengthSqr() > assistRange * assistRange )
+		return false;
+
+	const float sentryLeashRange = 150.0f;
+	float rangeToSentry = me->GetDistanceBetween( mySentry );
+
+	if ( rangeToSentry > sentryLeashRange )
+	{
+		if ( m_repathTimer.IsElapsed() )
+		{
+			m_repathTimer.Start( RandomFloat( 0.5f, 1.0f ) );
+
+			CTFBotPathCost cost( me, FASTEST_ROUTE );
+			m_path.Compute( me, mySentry->GetAbsOrigin(), cost );
+		}
+
+		m_path.Update( me );
+		return true;
+	}
+
+	CBaseCombatWeapon *shotgun = me->Weapon_GetSlot( TF_WPN_TYPE_PRIMARY );
+	if ( !shotgun )
+		return false;
+
+	me->Weapon_Switch( shotgun );
+	me->StopLookingAroundForEnemies();
+	me->GetBodyInterface()->AimHeadTowards( targetPlayer->WorldSpaceCenter(), IBody::CRITICAL, 0.5f, NULL, "Attack my mini-sentry target" );
+	me->PressFireButton();
+
+	return true;
+}
+
+
+//---------------------------------------------------------------------------------------------
 // Everything is built, upgrade/maintain it
 // TODO: Upgrade/maintain nearby friendly buildings, too.
 void CTFBotEngineerBuilding::UpgradeAndMaintainBuildings( CTFBot *me )
@@ -155,6 +207,8 @@ void CTFBotEngineerBuilding::UpgradeAndMaintainBuildings( CTFBot *me )
 
 		bool bImprovedMiniSentry = tf_bot_engineer_improved_behavior.GetBool() && mySentry->IsMiniBuilding();
 
+
+
 		CBaseObject *workTarget = bImprovedMiniSentry ? NULL : mySentry;
 
 		int iSentryLevel = mySentry->GetUpgradeLevel();
@@ -169,6 +223,9 @@ void CTFBotEngineerBuilding::UpgradeAndMaintainBuildings( CTFBot *me )
 			bRepairSentry = false;
 			bSentryNeedsAmmo = mySentry->IsAmmoLow( 0.50f );
 			iDesiredDispenserLevel = 3;
+
+			// If bImprovedMiniSentry, stand up again as there's little point to crouch behind a mini-sentry.
+			me->ReleaseCrouchButton();
 		}
 
 		if ( mySentry->HasSapper() || mySentry->IsPlasmaDisabled() )
@@ -200,6 +257,27 @@ void CTFBotEngineerBuilding::UpgradeAndMaintainBuildings( CTFBot *me )
 			me->StopLookingAroundForEnemies();
 			me->GetBodyInterface()->AimHeadTowards( workTarget->WorldSpaceCenter(), IBody::CRITICAL, 1.0f, NULL, "Work on my buildings" );
 			me->PressFireButton();
+		} 
+		else
+		{
+			// We did not have a workTarget, consider checking if our
+			// mini-sentry has a target it's attacking and if it's close.
+			// if true, then attack the target of our mini-sentry.
+			if ( bImprovedMiniSentry && TryAttackMiniSentryTarget( me, mySentry ) )
+			{
+				return;
+			}
+
+			// 
+			CBaseCombatWeapon *shotgun = me->Weapon_GetSlot( TF_WPN_TYPE_PRIMARY );
+			if ( shotgun )
+			{
+				me->Weapon_Switch( shotgun );
+			}
+
+			me->StartLookingAroundForEnemies();
+
+			// Any friendly nearby buildings we can help?
 		}
 	}
 }

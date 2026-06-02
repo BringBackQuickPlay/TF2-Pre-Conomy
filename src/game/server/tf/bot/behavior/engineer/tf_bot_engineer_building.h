@@ -7,7 +7,7 @@
 #define TF_BOT_ENGINEER_BUILDING_H
 
 class CTFBotHintSentrygun;
-
+class CObjectSentrygun;
 
 class CTFBotEngineerBuilding : public Action< CTFBot >
 {
@@ -55,6 +55,8 @@ private:
 	CountdownTimer m_territoryRangeTimer;
 	bool m_isSentryOutOfPosition;
 	bool CheckIfSentryIsOutOfPosition( CTFBot *me ) const;
+
+	bool TryAttackMiniSentryTarget( CTFBot *me, CObjectSentrygun *mySentry );
 
 	void UpgradeAndMaintainBuildings( CTFBot *me );
 	bool IsMetalSourceNearby( CTFBot *me ) const;
