@@ -2083,6 +2083,21 @@ void CObjectSentrygun::RemoveAllAmmo()
 
 
 //-----------------------------------------------------------------------------
+// Purpose:
+//-----------------------------------------------------------------------------
+bool CObjectSentrygun::IsAmmoLow( float flAmmoRatio ) const
+{
+	if ( m_iMaxAmmoShells > 0 && m_iAmmoShells <= (int)( (float)m_iMaxAmmoShells * flAmmoRatio ) )
+		return true;
+
+	if ( m_iUpgradeLevel == 3 && m_iMaxAmmoRockets > 0 && m_iAmmoRockets <= (int)( (float)m_iMaxAmmoRockets * flAmmoRatio ) )
+		return true;
+
+	return false;
+}
+
+
+//-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
 void CObjectSentrygun::EmitSentrySound( IRecipientFilter& filter, int iEntIndex, const char *soundname )

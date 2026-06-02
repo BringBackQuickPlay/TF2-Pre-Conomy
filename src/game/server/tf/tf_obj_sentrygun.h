@@ -110,6 +110,8 @@ public:
 
 	void RemoveAllAmmo();
 
+	bool IsAmmoLow( float flAmmoRatio ) const;
+
 	virtual int		GetMaxHealthForCurrentLevel( void );
 	virtual int		GetUpgradeMetalRequired();
 	bool			IsScaledSentry() { return m_flScaledSentry != 1.0f; }

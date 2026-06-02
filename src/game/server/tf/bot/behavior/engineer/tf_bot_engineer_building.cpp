@@ -28,6 +28,8 @@
 ConVar tf_bot_engineer_retaliate_range( "tf_bot_engineer_retaliate_range", "750", FCVAR_CHEAT, "If attacker who destroyed sentry is closer than this, attack. Otherwise, retreat" );
 ConVar tf_bot_engineer_exit_near_sentry_range( "tf_bot_engineer_exit_near_sentry_range", "2500", FCVAR_CHEAT, "Maximum travel distance between a bot's Sentry gun and its Teleporter Exit" );
 ConVar tf_bot_engineer_max_sentry_travel_distance_to_point( "tf_bot_engineer_max_sentry_travel_distance_to_point", "2500", FCVAR_CHEAT, "Maximum travel distance between a bot's Sentry gun and the currently contested point" );
+ConVar tf_bot_engineer_gunslinger_upgrade_fix( "tf_bot_engineer_gunslinger_upgrade_fix", "0", FCVAR_CHEAT, "If set, Engineer bots do not treat mini-sentries as upgradeable sentries and should not get stuck trying to upgrade sentry/stuck not upgrading dispenser." );
+
 
 extern ConVar tf_bot_path_lookahead_range;
 
@@ -152,22 +154,37 @@ void CTFBotEngineerBuilding::UpgradeAndMaintainBuildings( CTFBot *me )
 		m_searchTimer.Invalidate();
 
 		CBaseObject *workTarget = mySentry;
+		int iSentryLevel = mySentry->GetUpgradeLevel();
+		bool bUpgradeSentry = iSentryLevel < 3;
+		bool bRepairSentry = mySentry->GetTimeSinceLastInjury() < 1.0f || mySentry->GetHealth() < mySentry->GetMaxHealth();
+		bool bMiniSentryNeedsAmmo = false;
+		int iDesiredDispenserLevel = iSentryLevel;
+
+		if ( tf_bot_engineer_gunslinger_upgrade_fix.GetBool() && mySentry->IsMiniBuilding() )
+		{
+			bUpgradeSentry = false;
+			bRepairSentry = false;
+			bMiniSentryNeedsAmmo = mySentry->IsAmmoLow( 0.50f );
+			iDesiredDispenserLevel = 3;
+		}
 
 		if ( mySentry->HasSapper() || mySentry->IsPlasmaDisabled() )
 			workTarget = mySentry;
 		else if ( myDispenser->HasSapper() || myDispenser->IsPlasmaDisabled() )
 			workTarget = myDispenser;
-		else if ( mySentry->GetTimeSinceLastInjury() < 1.0f || mySentry->GetHealth() < mySentry->GetMaxHealth() )
+		else if ( bRepairSentry )
 			workTarget = mySentry;
 		else if ( mySentry->IsBuilding() )
 			workTarget = mySentry;
 		else if ( myDispenser->IsBuilding() )
 			workTarget = myDispenser;
-		else if ( mySentry->GetUpgradeLevel() < 3 )
+		else if ( bUpgradeSentry )
 			workTarget = mySentry;
 		else if ( myDispenser->GetHealth() < myDispenser->GetMaxHealth() )
 			workTarget = myDispenser;
-		else if ( myDispenser->GetUpgradeLevel() < mySentry->GetUpgradeLevel() )
+		else if ( bMiniSentryNeedsAmmo )
+			workTarget = mySentry;
+		else if ( myDispenser->GetUpgradeLevel() < iDesiredDispenserLevel )
 			workTarget = myDispenser;
 
 		me->StopLookingAroundForEnemies();
@@ -374,7 +391,7 @@ ActionResult< CTFBot >	CTFBotEngineerBuilding::Update( CTFBot *me, float interva
 	}
 
 	// build up the sentry all the way if there is a metal source nearby
-	if ( mySentry->GetUpgradeLevel() < 3 )
+	if ( mySentry->GetUpgradeLevel() < 3 && ( !tf_bot_engineer_gunslinger_upgrade_fix.GetBool() || !mySentry->IsMiniBuilding() ) )
 	{
 		if ( m_nearbyMetalStatus == NEARBY_METAL_UNKNOWN )
 		{
