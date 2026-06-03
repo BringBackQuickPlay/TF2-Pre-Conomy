@@ -19,6 +19,8 @@
 #include "bot/behavior/engineer/tf_bot_engineer_build_teleport_exit.h"
 #include "bot/behavior/engineer/tf_bot_engineer_build_sentrygun.h"
 #include "bot/behavior/engineer/tf_bot_engineer_build_dispenser.h"
+#include "bot/behavior/engineer/tf_bot_engineer_assist_friendly_building.h"
+#include "bot/behavior/engineer/tf_bot_engineer_patrol_nest.h"
 #include "bot/behavior/tf_bot_attack.h"
 #include "bot/behavior/tf_bot_get_ammo.h"
 #include "bot/map_entities/tf_bot_hint_teleporter_exit.h"
@@ -62,22 +64,17 @@ ActionResult< CTFBot >	CTFBotEngineerBuilding::OnStart( CTFBot *me, Action< CTFB
 	m_isSentryOutOfPosition = false;
 	m_nearbyMetalStatus = NEARBY_METAL_UNKNOWN;
 
-	m_friendlyBuildingTask = FRIENDLY_BUILDING_TASK_NONE;
-	m_friendlyBuildingTarget = NULL;
-	m_friendlyBuildingStartLevel = 0;
-	m_spyCheckShotsRemaining = 0;
+	m_assistFriendlyBuildingTimer.Start( RandomFloat( 3.0f, 6.0f ) );
+	m_patrolNestTimer.Start( RandomFloat( 10.0f, 20.0f ) );
+	m_noFriendlyPatrolTargetTimer.Start( 30.0f );
 
-	m_friendlyBuildingRepathTimer.Invalidate();
-	m_friendlyBuildingTaskTimer.Invalidate();
-	m_spyCheckShotTimer.Invalidate();
-
-	m_friendlyPatrolFeintGoal = vec3_origin;
-	m_friendlyPatrolFeintReturnTarget = NULL;
-	m_spyKilledPatrolBoostCount = 0;
-
-	m_nextFriendlyPatrolTimer.Start( GetRandomizedPatrolDuration( 10.0f, 20.0f ) );
-	m_nextFriendlyUpgradeTimer.Start( RandomFloat( 8.0f, 16.0f ) );
-	m_nextFriendlySpyCheckTimer.Start( RandomFloat( 6.0f, 14.0f ) );
+	for ( int i = 0; i < ARRAYSIZE( m_friendlySentryMemory ); ++i )
+	{
+		m_friendlySentryMemory[i].sentry = NULL;
+		m_friendlySentryMemory[i].builder = NULL;
+		m_friendlySentryMemory[i].lastKnownPosition = vec3_origin;
+		m_friendlySentryMemory[i].forgetTimer.Invalidate();
+	}
 
 	return Continue();
 }
@@ -135,8 +132,9 @@ bool CTFBotEngineerBuilding::TryAttackMiniSentryTarget( CTFBot *me, CObjectSentr
 }
 
 
+
 //---------------------------------------------------------------------------------------------
-bool CTFBotEngineerBuilding::IsBuildingRecentlyAttacked( CBaseObject *obj, float time ) const
+static bool IsBuildingImportantToMeUnderThreat( CTFBot *me, CBaseObject *obj, float recentTime )
 {
 	if ( !obj )
 		return false;
@@ -144,7 +142,7 @@ bool CTFBotEngineerBuilding::IsBuildingRecentlyAttacked( CBaseObject *obj, float
 	if ( obj->HasSapper() || obj->IsPlasmaDisabled() )
 		return true;
 
-	if ( obj->GetTimeSinceLastInjury() < time )
+	if ( obj->GetTimeSinceLastInjury() < recentTime )
 		return true;
 
 	if ( obj->GetHealth() < obj->GetMaxHealth() )
@@ -155,25 +153,7 @@ bool CTFBotEngineerBuilding::IsBuildingRecentlyAttacked( CBaseObject *obj, float
 
 
 //---------------------------------------------------------------------------------------------
-// Important: our own mini-sentry is disposable.
-// Damage to our own mini-sentry should not interrupt useful friendly-building work.
-bool CTFBotEngineerBuilding::MyImportantBuildingsRecentlyAttacked( CTFBot *me, float time ) const
-{
-	CObjectSentrygun *mySentry = (CObjectSentrygun *)me->GetObjectOfType( OBJ_SENTRYGUN );
-	CObjectDispenser *myDispenser = (CObjectDispenser *)me->GetObjectOfType( OBJ_DISPENSER );
-
-	if ( myDispenser && IsBuildingRecentlyAttacked( myDispenser, time ) )
-		return true;
-
-	if ( mySentry && !mySentry->IsMiniBuilding() && IsBuildingRecentlyAttacked( mySentry, time ) )
-		return true;
-
-	return false;
-}
-
-
-//---------------------------------------------------------------------------------------------
-bool CTFBotEngineerBuilding::IsFriendlyBuildingCandidate( CTFBot *me, CBaseObject *obj ) const
+static bool IsFriendlyObjectNotMine( CTFBot *me, CBaseObject *obj )
 {
 	if ( !me || !obj )
 		return false;
@@ -189,18 +169,75 @@ bool CTFBotEngineerBuilding::IsFriendlyBuildingCandidate( CTFBot *me, CBaseObjec
 
 
 //---------------------------------------------------------------------------------------------
-bool CTFBotEngineerBuilding::CanSeeBuilding( CTFBot *me, CBaseObject *obj ) const
+static bool IsVisibleBuildingForEngineer( CTFBot *me, CBaseObject *obj )
 {
 	if ( !me || !obj )
 		return false;
 
-	trace_t result;
-	UTIL_TraceLine( me->EyePosition(), obj->WorldSpaceCenter(), MASK_SOLID_BRUSHONLY, me, COLLISION_GROUP_NONE, &result );
+	Vector eye = me->EyePosition();
+	Vector center = obj->WorldSpaceCenter();
 
-	if ( result.fraction >= 1.0f )
+	Vector toBuilding = center - eye;
+	toBuilding.z = 0.0f;
+
+	Vector side( -toBuilding.y, toBuilding.x, 0.0f );
+	if ( side.NormalizeInPlace() <= 0.0f )
+	{
+		side = Vector( 1.0f, 0.0f, 0.0f );
+	}
+
+	Vector tracePoints[] =
+	{
+		center,
+		center + Vector( 0.0f, 0.0f, 32.0f ),
+		center + side * 24.0f,
+		center - side * 24.0f,
+		center + side * 24.0f + Vector( 0.0f, 0.0f, 32.0f ),
+		center - side * 24.0f + Vector( 0.0f, 0.0f, 32.0f )
+	};
+
+	for ( int i = 0; i < ARRAYSIZE( tracePoints ); ++i )
+	{
+		trace_t result;
+		UTIL_TraceLine( eye, tracePoints[i], MASK_SOLID_BRUSHONLY, me, COLLISION_GROUP_NONE, &result );
+
+		if ( result.fraction >= 1.0f )
+			return true;
+
+		if ( result.m_pEnt == obj )
+			return true;
+	}
+
+	return false;
+}
+
+
+//---------------------------------------------------------------------------------------------
+static bool IsFriendlyBuildingAssistCandidate( CTFBot *me, CBaseObject *obj )
+{
+	if ( !IsFriendlyObjectNotMine( me, obj ) )
+		return false;
+
+	if ( !IsVisibleBuildingForEngineer( me, obj ) )
+		return false;
+
+	if ( FClassnameIs( obj, "obj_sentrygun" ) )
+	{
+		CObjectSentrygun *sentry = (CObjectSentrygun *)obj;
+		if ( sentry->IsMiniBuilding() )
+			return false;
+	}
+
+	if ( obj->HasSapper() || obj->IsPlasmaDisabled() )
 		return true;
 
-	if ( result.m_pEnt == obj )
+	if ( obj->GetHealth() < obj->GetMaxHealth() )
+		return true;
+
+	if ( obj->IsBuilding() )
+		return true;
+
+	if ( obj->GetUpgradeLevel() < 3 )
 		return true;
 
 	return false;
@@ -208,31 +245,331 @@ bool CTFBotEngineerBuilding::CanSeeBuilding( CTFBot *me, CBaseObject *obj ) cons
 
 
 //---------------------------------------------------------------------------------------------
-void CTFBotEngineerBuilding::ReturnToOwnSentry( CTFBot *me )
+bool CTFBotEngineerBuilding::ShouldConsiderFriendlyEngineerActions( CTFBot *me ) const
 {
-	CObjectSentrygun *mySentry = (CObjectSentrygun *)me->GetObjectOfType( OBJ_SENTRYGUN );
+	if ( !me )
+		return false;
 
-	m_friendlyBuildingTask = FRIENDLY_BUILDING_TASK_RETURN_HOME;
-	m_friendlyBuildingTarget = mySentry;
-	m_friendlyBuildingRepathTimer.Invalidate();
+	if ( me->GetTimeSinceLastInjury() < 1.0f )
+		return false;
+
+	CObjectSentrygun *mySentry = (CObjectSentrygun *)me->GetObjectOfType( OBJ_SENTRYGUN );
+	CObjectDispenser *myDispenser = (CObjectDispenser *)me->GetObjectOfType( OBJ_DISPENSER );
+
+	if ( !mySentry || !myDispenser )
+		return false;
+
+	if ( IsBuildingImportantToMeUnderThreat( me, myDispenser, 8.0f ) )
+		return false;
+
+	if ( myDispenser->IsBuilding() )
+		return false;
+
+	if ( mySentry->IsMiniBuilding() )
+		return true;
+
+	if ( IsBuildingImportantToMeUnderThreat( me, mySentry, 8.0f ) )
+		return false;
+
+	if ( mySentry->IsBuilding() )
+		return false;
+
+	if ( mySentry->GetUpgradeLevel() < 3 )
+		return false;
+
+	return true;
 }
 
 
 //---------------------------------------------------------------------------------------------
-void CTFBotEngineerBuilding::WorkOnBuilding( CTFBot *me, CBaseObject *target, const char *reason )
+void CTFBotEngineerBuilding::ClearExpiredFriendlySentryMemory( void )
 {
-	if ( !me || !target )
+	for ( int i = 0; i < ARRAYSIZE( m_friendlySentryMemory ); ++i )
+	{
+		CObjectSentrygun *sentry = m_friendlySentryMemory[i].sentry.Get();
+
+		if ( !m_friendlySentryMemory[i].forgetTimer.HasStarted() || m_friendlySentryMemory[i].forgetTimer.IsElapsed() || !sentry )
+		{
+			m_friendlySentryMemory[i].sentry = NULL;
+			m_friendlySentryMemory[i].builder = NULL;
+			m_friendlySentryMemory[i].lastKnownPosition = vec3_origin;
+			m_friendlySentryMemory[i].forgetTimer.Invalidate();
+		}
+	}
+}
+
+
+//---------------------------------------------------------------------------------------------
+void CTFBotEngineerBuilding::RememberFriendlySentry( CTFBot *me, CObjectSentrygun *sentry )
+{
+	if ( !me || !sentry )
 		return;
 
-	CBaseCombatWeapon *wrench = me->Weapon_GetSlot( TF_WPN_TYPE_MELEE );
-	if ( wrench )
+	if ( !IsFriendlyObjectNotMine( me, sentry ) )
+		return;
+
+	if ( sentry->IsMiniBuilding() )
+		return;
+
+	CTFPlayer *builder = ToTFPlayer( sentry->GetBuilder() );
+
+	int freeSlot = -1;
+	int replaceSlot = 0;
+	float farthestRememberedRange = -1.0f;
+
+	for ( int i = 0; i < ARRAYSIZE( m_friendlySentryMemory ); ++i )
 	{
-		me->Weapon_Switch( wrench );
+		CObjectSentrygun *remembered = m_friendlySentryMemory[i].sentry.Get();
+
+		if ( remembered == sentry || ( builder && m_friendlySentryMemory[i].builder.Get() == builder ) )
+		{
+			m_friendlySentryMemory[i].sentry = sentry;
+			m_friendlySentryMemory[i].builder = builder;
+			m_friendlySentryMemory[i].lastKnownPosition = sentry->GetAbsOrigin();
+			m_friendlySentryMemory[i].forgetTimer.Start( 30.0f );
+			return;
+		}
+
+		if ( !remembered && freeSlot < 0 )
+		{
+			freeSlot = i;
+		}
+
+		if ( remembered )
+		{
+			float range = me->GetDistanceBetween( remembered );
+			if ( range > farthestRememberedRange )
+			{
+				farthestRememberedRange = range;
+				replaceSlot = i;
+			}
+		}
 	}
 
-	me->StopLookingAroundForEnemies();
-	me->GetBodyInterface()->AimHeadTowards( target->WorldSpaceCenter(), IBody::CRITICAL, 1.0f, NULL, reason );
-	me->PressFireButton();
+	int slot = ( freeSlot >= 0 ) ? freeSlot : replaceSlot;
+	m_friendlySentryMemory[slot].sentry = sentry;
+	m_friendlySentryMemory[slot].builder = builder;
+	m_friendlySentryMemory[slot].lastKnownPosition = sentry->GetAbsOrigin();
+	m_friendlySentryMemory[slot].forgetTimer.Start( 30.0f );
+}
+
+
+//---------------------------------------------------------------------------------------------
+void CTFBotEngineerBuilding::UpdateFriendlySentryMemory( CTFBot *me )
+{
+	ClearExpiredFriendlySentryMemory();
+
+	CBaseEntity *ent = NULL;
+	while ( ( ent = gEntList.FindEntityByClassname( ent, "obj_sentrygun" ) ) != NULL )
+	{
+		CObjectSentrygun *sentry = dynamic_cast< CObjectSentrygun * >( ent );
+		if ( !sentry )
+			continue;
+
+		if ( !IsFriendlyObjectNotMine( me, sentry ) )
+			continue;
+
+		if ( sentry->IsMiniBuilding() )
+			continue;
+
+		if ( !IsVisibleBuildingForEngineer( me, sentry ) )
+			continue;
+
+		RememberFriendlySentry( me, sentry );
+	}
+}
+
+
+//---------------------------------------------------------------------------------------------
+CObjectSentrygun *CTFBotEngineerBuilding::FindRememberedFriendlySentry( CTFBot *me ) const
+{
+	CObjectSentrygun *bestSentry = NULL;
+	float bestRange = FLT_MAX;
+
+	for ( int i = 0; i < ARRAYSIZE( m_friendlySentryMemory ); ++i )
+	{
+		CObjectSentrygun *sentry = m_friendlySentryMemory[i].sentry.Get();
+
+		if ( !sentry )
+			continue;
+
+		if ( !m_friendlySentryMemory[i].forgetTimer.HasStarted() || m_friendlySentryMemory[i].forgetTimer.IsElapsed() )
+			continue;
+
+		if ( !IsFriendlyObjectNotMine( me, sentry ) )
+			continue;
+
+		if ( sentry->IsMiniBuilding() )
+			continue;
+
+		float range = me->GetDistanceBetween( sentry );
+		if ( range < bestRange )
+		{
+			bestSentry = sentry;
+			bestRange = range;
+		}
+	}
+
+	return bestSentry;
+}
+
+
+//---------------------------------------------------------------------------------------------
+CBaseObject *CTFBotEngineerBuilding::FindFriendlyBuildingAssistTarget( CTFBot *me ) const
+{
+	CBaseObject *bestDamagedSentry = NULL;
+	CBaseObject *bestUpgradeSentry = NULL;
+	CBaseObject *bestDamagedOther = NULL;
+	CBaseObject *bestUpgradeOther = NULL;
+
+	float bestDamagedSentryRange = FLT_MAX;
+	float bestUpgradeSentryRange = FLT_MAX;
+	float bestDamagedOtherRange = FLT_MAX;
+	float bestUpgradeOtherRange = FLT_MAX;
+
+	const char *classNames[] =
+	{
+		"obj_sentrygun",
+		"obj_dispenser",
+		"obj_teleporter"
+	};
+
+	for ( int whichClass = 0; whichClass < ARRAYSIZE( classNames ); ++whichClass )
+	{
+		CBaseEntity *ent = NULL;
+		while ( ( ent = gEntList.FindEntityByClassname( ent, classNames[ whichClass ] ) ) != NULL )
+		{
+			CBaseObject *obj = dynamic_cast< CBaseObject * >( ent );
+			if ( !obj )
+				continue;
+
+			if ( !IsFriendlyBuildingAssistCandidate( me, obj ) )
+				continue;
+
+			float range = me->GetDistanceBetween( obj );
+
+			if ( FClassnameIs( obj, "obj_sentrygun" ) )
+			{
+				if ( obj->HasSapper() || obj->IsPlasmaDisabled() || obj->GetHealth() < obj->GetMaxHealth() || obj->GetTimeSinceLastInjury() < 1.0f )
+				{
+					if ( range < bestDamagedSentryRange )
+					{
+						bestDamagedSentry = obj;
+						bestDamagedSentryRange = range;
+					}
+				}
+				else if ( obj->GetUpgradeLevel() < 3 )
+				{
+					if ( range < bestUpgradeSentryRange )
+					{
+						bestUpgradeSentry = obj;
+						bestUpgradeSentryRange = range;
+					}
+				}
+			}
+			else
+			{
+				if ( obj->HasSapper() || obj->IsPlasmaDisabled() || obj->GetHealth() < obj->GetMaxHealth() || obj->GetTimeSinceLastInjury() < 1.0f )
+				{
+					if ( range < bestDamagedOtherRange )
+					{
+						bestDamagedOther = obj;
+						bestDamagedOtherRange = range;
+					}
+				}
+				else if ( obj->GetUpgradeLevel() < 3 )
+				{
+					if ( range < bestUpgradeOtherRange )
+					{
+						bestUpgradeOther = obj;
+						bestUpgradeOtherRange = range;
+					}
+				}
+			}
+		}
+	}
+
+	if ( bestDamagedSentry )
+		return bestDamagedSentry;
+
+	if ( bestUpgradeSentry )
+		return bestUpgradeSentry;
+
+	if ( bestDamagedOther )
+		return bestDamagedOther;
+
+	return bestUpgradeOther;
+}
+
+
+//---------------------------------------------------------------------------------------------
+CBaseObject *CTFBotEngineerBuilding::FindFriendlyNestPatrolTarget( CTFBot *me ) const
+{
+	CBaseObject *bestSentry = NULL;
+	CBaseObject *bestDispenser = NULL;
+	float bestSentryRange = FLT_MAX;
+	float bestDispenserRange = FLT_MAX;
+
+	CBaseEntity *ent = NULL;
+	while ( ( ent = gEntList.FindEntityByClassname( ent, "obj_sentrygun" ) ) != NULL )
+	{
+		CObjectSentrygun *sentry = dynamic_cast< CObjectSentrygun * >( ent );
+		if ( !sentry )
+			continue;
+
+		if ( !IsFriendlyObjectNotMine( me, sentry ) )
+			continue;
+
+		if ( sentry->IsMiniBuilding() )
+			continue;
+
+		if ( !IsVisibleBuildingForEngineer( me, sentry ) )
+			continue;
+
+		float range = me->GetDistanceBetween( sentry );
+		if ( range < bestSentryRange )
+		{
+			bestSentry = sentry;
+			bestSentryRange = range;
+		}
+	}
+
+	ent = NULL;
+	while ( ( ent = gEntList.FindEntityByClassname( ent, "obj_dispenser" ) ) != NULL )
+	{
+		CObjectDispenser *dispenser = dynamic_cast< CObjectDispenser * >( ent );
+		if ( !dispenser )
+			continue;
+
+		if ( !IsFriendlyObjectNotMine( me, dispenser ) )
+			continue;
+
+		if ( !IsVisibleBuildingForEngineer( me, dispenser ) )
+			continue;
+
+		float range = me->GetDistanceBetween( dispenser );
+		if ( range < bestDispenserRange )
+		{
+			bestDispenser = dispenser;
+			bestDispenserRange = range;
+		}
+	}
+
+	if ( bestSentry && bestDispenser )
+	{
+		if ( RandomInt( 1, 100 ) <= 25 )
+			return bestSentry;
+
+		return bestDispenser;
+	}
+
+	if ( bestSentry )
+		return bestSentry;
+
+	if ( bestDispenser )
+		return bestDispenser;
+
+	return FindRememberedFriendlySentry( me );
 }
 
 
@@ -379,13 +716,6 @@ void CTFBotEngineerBuilding::UpgradeAndMaintainBuildings( CTFBot *me )
 		} 
 		else
 		{
-			// We have no urgent work on our own important buildings.
-			// Our own mini-sentry is disposable, so helping a friendly real sentry can take priority.
-			if ( DefendFriendlyBuildings( me ) )
-			{
-				return;
-			}
-
 			// We did not have a workTarget, consider checking if our
 			// mini-sentry has a target it's attacking and if it's close.
 			// if true, then attack the target of our mini-sentry.
@@ -394,21 +724,7 @@ void CTFBotEngineerBuilding::UpgradeAndMaintainBuildings( CTFBot *me )
 				return;
 			}
 
-			if ( UpgradeFriendlyBuildings( me ) )
-			{
-				return;
-			}
-
-			if ( PatrolBetweenMyAndFriendlyBuildings( me ) )
-			{
-				return;
-			}
-
-			if ( SpyCheckBuildings( me ) )
-			{
-				return;
-			}
-
+			// 
 			CBaseCombatWeapon *shotgun = me->Weapon_GetSlot( TF_WPN_TYPE_PRIMARY );
 			if ( shotgun )
 			{
@@ -416,537 +732,11 @@ void CTFBotEngineerBuilding::UpgradeAndMaintainBuildings( CTFBot *me )
 			}
 
 			me->StartLookingAroundForEnemies();
+
+			// Any friendly nearby buildings we can help?
 		}
 	}
 }
-
-
-//---------------------------------------------------------------------------------------------
-float CTFBotEngineerBuilding::GetRandomizedPatrolDuration( float minTime, float maxTime ) const
-{
-	if ( RandomInt( 1, 100 ) <= 20 )
-	{
-		float offset = (float)RandomInt( 1, 3 );
-
-		if ( RandomInt( 0, 1 ) == 0 )
-		{
-			minTime -= offset;
-			maxTime -= offset;
-		}
-		else
-		{
-			minTime += offset;
-			maxTime += offset;
-		}
-	}
-
-	if ( minTime < 1.0f )
-		minTime = 1.0f;
-
-	if ( maxTime < minTime )
-		maxTime = minTime;
-
-	return RandomFloat( minTime, maxTime );
-}
-
-
-//---------------------------------------------------------------------------------------------
-bool CTFBotEngineerBuilding::BeginPatrolFeint( CTFBot *me, CBaseObject *realGoal, CBaseObject *returnTarget )
-{
-	if ( !me || !realGoal || !returnTarget )
-		return false;
-
-	if ( RandomInt( 1, 100 ) > 15 )
-		return false;
-
-	m_friendlyPatrolFeintGoal = me->GetAbsOrigin() + 0.5f * ( realGoal->GetAbsOrigin() - me->GetAbsOrigin() );
-	m_friendlyPatrolFeintReturnTarget = returnTarget;
-
-	m_friendlyBuildingTask = FRIENDLY_BUILDING_TASK_PATROL_FEINT;
-	m_friendlyBuildingRepathTimer.Invalidate();
-
-	return true;
-}
-
-
-//---------------------------------------------------------------------------------------------
-CBaseObject *CTFBotEngineerBuilding::FindClosestFriendlyPlayerForSpyCheck( CTFBot *me ) const
-{
-	CBaseObject *bestPlayer = NULL;
-	float bestRange = FLT_MAX;
-
-	for ( int i = 1; i <= gpGlobals->maxClients; ++i )
-	{
-		CTFPlayer *player = ToTFPlayer( UTIL_PlayerByIndex( i ) );
-		if ( !player )
-			continue;
-
-		if ( player == me )
-			continue;
-
-		if ( !player->IsAlive() )
-			continue;
-
-		if ( player->GetTeamNumber() != me->GetTeamNumber() )
-			continue;
-
-		float range = me->GetDistanceBetween( player );
-		if ( range < bestRange )
-		{
-			bestPlayer = (CBaseObject *)player;
-			bestRange = range;
-		}
-	}
-
-	return bestPlayer;
-}
-
-
-//---------------------------------------------------------------------------------------------
-CBaseObject *CTFBotEngineerBuilding::FindVisibleFriendlyPatrolBuilding( CTFBot *me ) const
-{
-	CBaseObject *bestSentry = NULL;
-	CBaseObject *bestDispenser = NULL;
-
-	float bestSentryRange = FLT_MAX;
-	float bestDispenserRange = FLT_MAX;
-
-	CBaseEntity *ent = NULL;
-	while ( ( ent = gEntList.FindEntityByClassname( ent, "obj_sentrygun" ) ) != NULL )
-	{
-		CObjectSentrygun *sentry = dynamic_cast< CObjectSentrygun * >( ent );
-		if ( !sentry )
-			continue;
-
-		if ( !IsFriendlyBuildingCandidate( me, sentry ) )
-			continue;
-
-		if ( !CanSeeBuilding( me, sentry ) )
-			continue;
-
-		float range = me->GetDistanceBetween( sentry );
-		if ( range < bestSentryRange )
-		{
-			bestSentry = sentry;
-			bestSentryRange = range;
-		}
-	}
-
-	ent = NULL;
-	while ( ( ent = gEntList.FindEntityByClassname( ent, "obj_dispenser" ) ) != NULL )
-	{
-		CObjectDispenser *dispenser = dynamic_cast< CObjectDispenser * >( ent );
-		if ( !dispenser )
-			continue;
-
-		if ( !IsFriendlyBuildingCandidate( me, dispenser ) )
-			continue;
-
-		if ( !CanSeeBuilding( me, dispenser ) )
-			continue;
-
-		float range = me->GetDistanceBetween( dispenser );
-		if ( range < bestDispenserRange )
-		{
-			bestDispenser = dispenser;
-			bestDispenserRange = range;
-		}
-	}
-
-	if ( bestSentry )
-		return bestSentry;
-
-	return bestDispenser;
-}
-
-
-//---------------------------------------------------------------------------------------------
-bool CTFBotEngineerBuilding::PatrolBetweenMyAndFriendlyBuildings( CTFBot *me )
-{
-	CObjectSentrygun *mySentry = (CObjectSentrygun *)me->GetObjectOfType( OBJ_SENTRYGUN );
-
-	if ( !mySentry )
-		return false;
-
-	if ( m_friendlyBuildingTask != FRIENDLY_BUILDING_TASK_NONE &&
-		 m_friendlyBuildingTask != FRIENDLY_BUILDING_TASK_PATROL_TO_FRIENDLY &&
-		 m_friendlyBuildingTask != FRIENDLY_BUILDING_TASK_PATROL_WAIT &&
-		 m_friendlyBuildingTask != FRIENDLY_BUILDING_TASK_RETURN_HOME &&
-		 m_friendlyBuildingTask != FRIENDLY_BUILDING_TASK_PATROL_FEINT )
-	{
-		return false;
-	}
-
-	if ( MyImportantBuildingsRecentlyAttacked( me, 1.0f ) )
-	{
-		ReturnToOwnSentry( me );
-		return false;
-	}
-
-	if ( m_friendlyBuildingTask == FRIENDLY_BUILDING_TASK_NONE )
-	{
-		if ( !m_nextFriendlyPatrolTimer.IsElapsed() )
-			return false;
-
-		// 20% chance to skip this patrol cycle entirely.
-		if ( RandomInt( 1, 100 ) <= 20 )
-		{
-			m_nextFriendlyPatrolTimer.Start( GetRandomizedPatrolDuration( 10.0f, 20.0f ) );
-			return false;
-		}
-
-		CBaseObject *target = FindVisibleFriendlyPatrolBuilding( me );
-		if ( !target )
-		{
-			m_nextFriendlyPatrolTimer.Start( GetRandomizedPatrolDuration( 10.0f, 20.0f ) );
-			return false;
-		}
-
-		// 15% chance to fake leaving the nest, run halfway, then return.
-		if ( BeginPatrolFeint( me, target, mySentry ) )
-			return true;
-
-		m_friendlyBuildingTask = FRIENDLY_BUILDING_TASK_PATROL_TO_FRIENDLY;
-		m_friendlyBuildingTarget = target;
-		m_friendlyBuildingRepathTimer.Invalidate();
-	}
-
-	if ( m_friendlyBuildingTask == FRIENDLY_BUILDING_TASK_PATROL_FEINT )
-	{
-		CBaseObject *returnTarget = m_friendlyPatrolFeintReturnTarget.Get();
-		if ( !returnTarget )
-		{
-			m_friendlyBuildingTask = FRIENDLY_BUILDING_TASK_NONE;
-			m_friendlyBuildingTarget = NULL;
-			m_friendlyPatrolFeintReturnTarget = NULL;
-			m_nextFriendlyPatrolTimer.Start( GetRandomizedPatrolDuration( 10.0f, 20.0f ) );
-			return false;
-		}
-
-		const float feintRange = 75.0f;
-
-		if ( me->GetAbsOrigin().DistTo( m_friendlyPatrolFeintGoal ) > feintRange )
-		{
-			if ( m_friendlyBuildingRepathTimer.IsElapsed() )
-			{
-				m_friendlyBuildingRepathTimer.Start( RandomFloat( 0.5f, 1.0f ) );
-
-				CBaseCombatWeapon *shotgun = me->Weapon_GetSlot( TF_WPN_TYPE_PRIMARY );
-				if ( shotgun )
-				{
-					me->Weapon_Switch( shotgun );
-				}
-
-				CTFBotPathCost cost( me, FASTEST_ROUTE );
-				m_path.Compute( me, m_friendlyPatrolFeintGoal, cost );
-			}
-
-			m_path.Update( me );
-			return true;
-		}
-
-		m_friendlyBuildingTask = FRIENDLY_BUILDING_TASK_RETURN_HOME;
-		m_friendlyBuildingTarget = returnTarget;
-		m_friendlyPatrolFeintReturnTarget = NULL;
-		m_friendlyBuildingRepathTimer.Invalidate();
-		return true;
-	}
-
-	CBaseObject *target = m_friendlyBuildingTarget.Get();
-	if ( !target )
-	{
-		m_friendlyBuildingTask = FRIENDLY_BUILDING_TASK_NONE;
-		m_nextFriendlyPatrolTimer.Start( GetRandomizedPatrolDuration( 10.0f, 20.0f ) );
-		return false;
-	}
-
-	if ( m_friendlyBuildingTask == FRIENDLY_BUILDING_TASK_PATROL_TO_FRIENDLY )
-	{
-		const float patrolRange = 100.0f;
-
-		if ( me->GetDistanceBetween( target ) > patrolRange )
-		{
-			if ( m_friendlyBuildingRepathTimer.IsElapsed() )
-			{
-				m_friendlyBuildingRepathTimer.Start( RandomFloat( 1.0f, 2.0f ) );
-
-				CBaseCombatWeapon *shotgun = me->Weapon_GetSlot( TF_WPN_TYPE_PRIMARY );
-				if ( shotgun )
-				{
-					me->Weapon_Switch( shotgun );
-				}
-
-				CTFBotPathCost cost( me, FASTEST_ROUTE );
-				m_path.Compute( me, target->GetAbsOrigin(), cost );
-			}
-
-			// While going to patrol, sometimes stop and fire 2 shots at the closest friendly ally.
-			//int allySpyCheckChance = ( m_spyKilledPatrolBoostCount > 0 ) ? 35 : 15;
-			int allySpyCheckChance = 15;
-			if ( RandomInt( 1, 100 ) <= allySpyCheckChance )
-			{
-				CBaseObject *ally = FindClosestFriendlyPlayerForSpyCheck( me );
-				if ( ally )
-				{
-					CBaseCombatWeapon *shotgun = me->Weapon_GetSlot( TF_WPN_TYPE_PRIMARY );
-					if ( shotgun )
-					{
-						me->Weapon_Switch( shotgun );
-					}
-
-					me->StopLookingAroundForEnemies();
-					me->GetBodyInterface()->AimHeadTowards( ally->WorldSpaceCenter(), IBody::CRITICAL, 0.25f, NULL, "Spy-check friendly ally while patrolling" );
-					me->PressFireButton();
-					me->PressFireButton();
-
-					//if ( m_spyKilledPatrolBoostCount > 0 )
-					//	--m_spyKilledPatrolBoostCount;
-
-					return true;
-				}
-			}
-
-			m_path.Update( me );
-			return true;
-		}
-
-		m_friendlyBuildingTask = FRIENDLY_BUILDING_TASK_PATROL_WAIT;
-		m_friendlyBuildingTaskTimer.Start( GetRandomizedPatrolDuration( 6.0f, 10.0f ) );
-		return true;
-	}
-
-	if ( m_friendlyBuildingTask == FRIENDLY_BUILDING_TASK_PATROL_WAIT )
-	{
-		me->StartLookingAroundForEnemies();
-
-		if ( FClassnameIs( target, "obj_sentrygun" ) )
-		{
-			CObjectSentrygun *friendlySentry = (CObjectSentrygun *)target;
-
-			if ( !friendlySentry->IsMiniBuilding() && IsBuildingRecentlyAttacked( friendlySentry, 1.0f ) )
-			{
-				if ( me->GetDistanceBetween( friendlySentry ) < me->GetDistanceBetween( mySentry ) )
-				{
-					m_friendlyBuildingTask = FRIENDLY_BUILDING_TASK_DEFEND;
-					m_friendlyBuildingTaskTimer.Start( GetRandomizedPatrolDuration( 4.0f, 6.0f ) );
-					return true;
-				}
-			}
-		}
-
-		if ( !m_friendlyBuildingTaskTimer.IsElapsed() )
-			return true;
-
-		// 15% chance to fake going home, run halfway, then return to the friendly building.
-		if ( BeginPatrolFeint( me, mySentry, target ) )
-			return true;
-
-		ReturnToOwnSentry( me );
-		return true;
-	}
-
-	if ( m_friendlyBuildingTask == FRIENDLY_BUILDING_TASK_RETURN_HOME )
-	{
-		const float homeRange = 100.0f;
-
-		if ( me->GetDistanceBetween( target ) > homeRange )
-		{
-			if ( m_friendlyBuildingRepathTimer.IsElapsed() )
-			{
-				m_friendlyBuildingRepathTimer.Start( RandomFloat( 1.0f, 2.0f ) );
-
-				CTFBotPathCost cost( me, FASTEST_ROUTE );
-				m_path.Compute( me, target->GetAbsOrigin(), cost );
-			}
-
-			m_path.Update( me );
-			return true;
-		}
-
-		m_friendlyBuildingTask = FRIENDLY_BUILDING_TASK_NONE;
-		m_friendlyBuildingTarget = NULL;
-		m_nextFriendlyPatrolTimer.Start( GetRandomizedPatrolDuration( 10.0f, 20.0f ) );
-		return false;
-	}
-
-	return false;
-}
-
-
-//---------------------------------------------------------------------------------------------
-CBaseObject *CTFBotEngineerBuilding::FindVisibleFriendlyUpgradeBuilding( CTFBot *me ) const
-{
-	// upgrade target finder here
-	return NULL;
-}
-
-
-//---------------------------------------------------------------------------------------------
-bool CTFBotEngineerBuilding::UpgradeFriendlyBuildings( CTFBot *me )
-{
-	// upgrade behaviour here
-	return NULL;
-}
-
-
-//---------------------------------------------------------------------------------------------
-CObjectSentrygun *CTFBotEngineerBuilding::FindFriendlySentryNeedingDefense( CTFBot *me ) const
-{
-	// defense target finder here
-	return NULL;
-}
-
-
-//---------------------------------------------------------------------------------------------
-bool CTFBotEngineerBuilding::DefendFriendlyBuildings( CTFBot *me )
-{
-	// defense behaviour here
-	return NULL;
-}
-
-
-//---------------------------------------------------------------------------------------------
-CBaseObject *CTFBotEngineerBuilding::FindSpyCheckBuilding( CTFBot *me ) const
-{
-	CBaseObject *bestSentry = NULL;
-	CBaseObject *bestDispenser = NULL;
-
-	float bestSentryRange = FLT_MAX;
-	float bestDispenserRange = FLT_MAX;
-
-	CBaseEntity *ent = NULL;
-	while ( ( ent = gEntList.FindEntityByClassname( ent, "obj_sentrygun" ) ) != NULL )
-	{
-		CObjectSentrygun *sentry = dynamic_cast< CObjectSentrygun * >( ent );
-		if ( !sentry )
-			continue;
-
-		if ( sentry->GetTeamNumber() != me->GetTeamNumber() )
-			continue;
-
-		// There's little point to spychecking a mini-sentry.
-		if ( sentry->IsMiniBuilding() )
-			continue;
-
-		if ( !CanSeeBuilding( me, sentry ) )
-			continue;
-
-		float range = me->GetDistanceBetween( sentry );
-		if ( range < bestSentryRange )
-		{
-			bestSentry = sentry;
-			bestSentryRange = range;
-		}
-	}
-
-	ent = NULL;
-	while ( ( ent = gEntList.FindEntityByClassname( ent, "obj_dispenser" ) ) != NULL )
-	{
-		CObjectDispenser *dispenser = dynamic_cast< CObjectDispenser * >( ent );
-		if ( !dispenser )
-			continue;
-
-		if ( dispenser->GetTeamNumber() != me->GetTeamNumber() )
-			continue;
-
-		if ( !CanSeeBuilding( me, dispenser ) )
-			continue;
-
-		float range = me->GetDistanceBetween( dispenser );
-		if ( range < bestDispenserRange )
-		{
-			bestDispenser = dispenser;
-			bestDispenserRange = range;
-		}
-	}
-
-	if ( bestSentry && bestDispenser )
-	{
-		if ( RandomInt( 1, 100 ) <= 25 ) // 25% chance to spycheck the sentry if we found both.
-			return bestSentry;
-
-		return bestDispenser;
-	}
-
-	if ( bestSentry )
-		return bestSentry;
-
-	return bestDispenser;
-
-	
-}
-
-
-//---------------------------------------------------------------------------------------------
-bool CTFBotEngineerBuilding::SpyCheckBuildings( CTFBot *me )
-{
-	if ( MyImportantBuildingsRecentlyAttacked( me, 1.0f ) )
-		return false;
-
-	if ( m_friendlyBuildingTask != FRIENDLY_BUILDING_TASK_NONE &&
-		 m_friendlyBuildingTask != FRIENDLY_BUILDING_TASK_SPYCHECK )
-	{
-		return false;
-	}
-
-	if ( m_friendlyBuildingTask != FRIENDLY_BUILDING_TASK_SPYCHECK )
-	{
-		if ( !m_nextFriendlySpyCheckTimer.IsElapsed() )
-			return false;
-
-		CBaseObject *target = FindSpyCheckBuilding( me );
-		if ( !target )
-		{
-			m_nextFriendlySpyCheckTimer.Start( RandomFloat( 6.0f, 14.0f ) );
-			return false;
-		}
-
-		m_friendlyBuildingTask = FRIENDLY_BUILDING_TASK_SPYCHECK;
-		m_friendlyBuildingTarget = target;
-		m_spyCheckShotsRemaining = RandomInt( 1, 2 );
-		m_spyCheckShotTimer.Invalidate();
-	}
-
-	CBaseObject *target = m_friendlyBuildingTarget.Get();
-	if ( !target )
-	{
-		m_friendlyBuildingTask = FRIENDLY_BUILDING_TASK_NONE;
-		m_nextFriendlySpyCheckTimer.Start( RandomFloat( 6.0f, 14.0f ) );
-		return false;
-	}
-
-	CBaseCombatWeapon *shotgun = me->Weapon_GetSlot( TF_WPN_TYPE_PRIMARY );
-	if ( shotgun )
-	{
-		me->Weapon_Switch( shotgun );
-	}
-
-	Vector aimSpot = target->WorldSpaceCenter();
-	aimSpot.z += 50.0f;
-
-	me->GetBodyInterface()->AimHeadTowards( aimSpot, IBody::CRITICAL, 0.25f, NULL, "Spy-check friendly building" );
-
-	if ( m_spyCheckShotTimer.IsElapsed() )
-	{
-		me->PressFireButton();
-
-		--m_spyCheckShotsRemaining;
-		m_spyCheckShotTimer.Start( RandomFloat( 0.25f, 0.45f ) );
-	}
-
-	if ( m_spyCheckShotsRemaining <= 0 )
-	{
-		m_friendlyBuildingTask = FRIENDLY_BUILDING_TASK_NONE;
-		m_friendlyBuildingTarget = NULL;
-		m_nextFriendlySpyCheckTimer.Start( RandomFloat( 8.0f, 18.0f ) );
-
-		me->StartLookingAroundForEnemies();
-		return true;
-	}
-
-	return true;
-}
-
 
 
 //---------------------------------------------------------------------------------------------
@@ -1226,6 +1016,52 @@ ActionResult< CTFBot >	CTFBotEngineerBuilding::Update( CTFBot *me, float interva
 		{
 			// drop a teleporter exit near our sentry
 			return SuspendFor( new CTFBotEngineerBuildTeleportExit(), "Building teleporter exit" );
+		}
+	}
+
+	// everything is built - maybe briefly assist another Engineer nest.
+	// Keep this decision here, not inside UpgradeAndMaintainBuildings(), so the assist action owns its own PathFollower.
+	if ( ShouldConsiderFriendlyEngineerActions( me ) )
+	{
+		UpdateFriendlySentryMemory( me );
+
+		if ( m_assistFriendlyBuildingTimer.IsElapsed() )
+		{
+			m_assistFriendlyBuildingTimer.Start( RandomFloat( 3.0f, 6.0f ) );
+
+			CBaseObject *assistTarget = FindFriendlyBuildingAssistTarget( me );
+			if ( assistTarget )
+			{
+				return SuspendFor( new CTFBotEngineerAssistFriendlyBuilding( assistTarget ), "Helping a friendly Engineer building" );
+			}
+		}
+
+		if ( m_patrolNestTimer.IsElapsed() )
+		{
+			m_patrolNestTimer.Start( RandomFloat( 10.0f, 20.0f ) );
+
+			CBaseObject *patrolTarget = FindFriendlyNestPatrolTarget( me );
+			if ( patrolTarget )
+			{
+				m_noFriendlyPatrolTargetTimer.Start( 30.0f );
+
+				// Not every idle window should become a patrol. This keeps Engineers from abandoning their own nest too often.
+				if ( RandomInt( 1, 100 ) <= 25 )
+				{
+					return SuspendFor( new CTFBotEngineerPatrolNest( patrolTarget ), "Patrolling a friendly Engineer nest" );
+				}
+			}
+			else if ( m_noFriendlyPatrolTargetTimer.IsElapsed() )
+			{
+				m_noFriendlyPatrolTargetTimer.Start( 30.0f );
+				return SuspendFor( new CTFBotEngineerPatrolNest, "Searching for friendly Engineer buildings" );
+			}
+		}
+
+		if ( m_noFriendlyPatrolTargetTimer.IsElapsed() )
+		{
+			m_noFriendlyPatrolTargetTimer.Start( 30.0f );
+			return SuspendFor( new CTFBotEngineerPatrolNest, "Searching for friendly Engineer buildings" );
 		}
 	}
 
