@@ -38,7 +38,7 @@
 	#include "halloween/merasmus/merasmus_trick_or_treat_prop.h"
 
 	ConVar  tf_flamethrower_velocity( "tf_flamethrower_velocity", "2300.0", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY, "Initial velocity of flame damage entities." );
-	ConVar	tf_flamethrower_drag("tf_flamethrower_drag", "0.89", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY, "Air drag of flame damage entities." );
+	ConVar	tf_flamethrower_drag("tf_flamethrower_drag", "0.87", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY, "Air drag of flame damage entities." );
 	ConVar	tf_flamethrower_float("tf_flamethrower_float", "50.0", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY, "Upward float velocity of flame damage entities." );
 	ConVar  tf_flamethrower_vecrand("tf_flamethrower_vecrand", "0.05", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY, "Random vector added to initial velocity of flame damage entities." );
 
@@ -566,34 +566,16 @@ void CTFFlameThrower::ItemPostFrame()
 		m_bFiredBothAttacks = false;
 	}
 
-	if ( !( pOwner->m_nButtons & IN_ATTACK ) )
-	{
-		// We were forced to fire, but time's up
-		if ( m_flMinPrimaryAttackBurstTime > 0.f && gpGlobals->curtime > m_flMinPrimaryAttackBurstTime )
-		{
-			m_flMinPrimaryAttackBurstTime = 0.f;
-#ifdef GAME_DLL
-			if ( m_hFlameManager )
-				{ m_hFlameManager->StopFiring(); }
-#endif // GAME_DLL
-			//DevMsg( "Stop Firing\n" );
-		}
-	}
-
 	if ( pOwner->m_nButtons & IN_ATTACK && pOwner->m_nButtons & IN_ATTACK2 )
 	{
 		m_bFiredBothAttacks = true;
 	}
 
-	// Force a min window of emission to prevent a case where
-	// tap-spamming +attack can create invisible flame points.
-	bool bForceFire = ( m_flMinPrimaryAttackBurstTime > 0.f && gpGlobals->curtime < m_flMinPrimaryAttackBurstTime );
-
 	if ( !m_bFiredSecondary )
 	{
 		bool bSpinDown = m_flSpinupBeginTime > 0.0f;
 
-		if ( pOwner->IsAlive() && ( ( pOwner->m_nButtons & IN_ATTACK ) || bForceFire ) && iAmmo > 0 )
+		if ( pOwner->IsAlive() && ( pOwner->m_nButtons & IN_ATTACK ) && iAmmo > 0 )
 		{
 			PrimaryAttack();
 			bSpinDown = false;
@@ -624,7 +606,7 @@ void CTFFlameThrower::ItemPostFrame()
 		}
 	}
 
-	if ( !( ( pOwner->m_nButtons & IN_ATTACK ) || ( pOwner->m_nButtons & IN_RELOAD ) || ( pOwner->m_nButtons & IN_ATTACK2 ) || m_bFiredSecondary ) && !bForceFire )
+	if ( !( ( pOwner->m_nButtons & IN_ATTACK ) || ( pOwner->m_nButtons & IN_RELOAD ) || ( pOwner->m_nButtons & IN_ATTACK2 ) || m_bFiredSecondary ) )
 	{
 		// no fire buttons down or reloading
 		if ( !ReloadOrSwitchWeapons() && ( m_bInReload == false ) && m_flSecondaryAnimTime < gpGlobals->curtime )
@@ -749,13 +731,6 @@ void CTFFlameThrower::PrimaryAttack()
 
 			m_flStartFiringTime = gpGlobals->curtime + 0.16;	// 5 frames at 30 fps
 			
-			// Force a min window of emission to prevent a case where
-			// tap-spamming +attack can create invisible flame points.
-			if ( m_flMinPrimaryAttackBurstTime == 0.f )
-			{
-				m_flMinPrimaryAttackBurstTime = gpGlobals->curtime + 0.2f;
-			}
-
 			SetWeaponState( FT_STATE_STARTFIRING );
 		}
 		break;
@@ -809,10 +784,9 @@ void CTFFlameThrower::PrimaryAttack()
 	C_CTF_GameStats.Event_PlayerFiredWeapon( pOwner, IsCurrentAttackACrit() );
 #endif
 
+	// Pre-Jungle Inferno: the weapon script controls how frequently an
+	// individual damage flame is emitted.
 	float flFiringInterval = m_pWeaponInfo->GetWeaponData( m_iWeaponMode ).m_flTimeFireDelay;
-	{
-		flFiringInterval = tf_flamethrower_new_flame_fire_delay;
-	}
 
 	// Don't attack if we're underwater
 	if ( pOwner->GetWaterLevel() != WL_Eyes )
@@ -846,46 +820,24 @@ void CTFFlameThrower::PrimaryAttack()
 
 
 #ifdef GAME_DLL
-		// create the flame entity
+		// Pre-Jungle Inferno: every firing interval creates an independent
+		// tf_flame damage entity. Damage is the weapon's configured DPS
+		// multiplied by the configured firing interval.
 		int iDamagePerSec = m_pWeaponInfo->GetWeaponData( m_iWeaponMode ).m_nDamage;
 		float flDamage = (float)iDamagePerSec * flFiringInterval;
-		{
-			flDamage = tf_flamethrower_damage_per_tick;
-		}
-#ifdef WATERFALL_FLAMETHROWER_TEST
-		int iWaterfallMode = 0;
-		CALL_ATTRIB_HOOK_INT( iWaterfallMode, flame_waterfall );
-		if ( iWaterfallMode )
-		{
-			flDamage = tf_flamethrower_waterfall_damage_per_tick.GetFloat();
-		}
-#endif
 		CALL_ATTRIB_HOOK_FLOAT( flDamage, mult_dmg );
 
 		int iCritFromBehind = 0;
 		CALL_ATTRIB_HOOK_INT( iCritFromBehind, set_flamethrower_back_crit );
 
-		{
-			if ( !m_hFlameManager )
-			{
-				m_hFlameManager = CTFFlameManager::Create( this );
-				// This is a hack(?).  Right now, the flame manager goes outside of the shooter's
-				// own PVS when they get very close to a wall (or just looks down), so we end
-				// up creating flame managers repeatedly for the same burst of flames.  This
-				// call ensures that the new manager will create particle effects.
-				//
-				// The *real* fix is to figure out how to get the flame manager to not go out
-				// of the shooter's PVS ever.
-				m_hFlameManager->StartFiring();
-			}
-
-			if ( m_hFlameManager )
-			{
-				// update damage state
-				m_hFlameManager->UpdateDamage( iDmgType, flDamage, tf_flamethrower_burn_frequency, iCritFromBehind == 1 );
-				m_hFlameManager->AddPoint( TIME_TO_TICKS( gpGlobals->curtime ) );
-			}
-		}
+		CTFFlameEntity::Create(
+			GetFlameOriginPos(),
+			pOwner->EyeAngles(),
+			this,
+			tf_flamethrower_velocity.GetFloat(),
+			iDmgType,
+			flDamage,
+			iCritFromBehind == 1 );
 
 		// Pyros can become invis in some game modes.  Hitting fire normally handles this,
 		// but in the case of flamethrowers it's likely that stealth will be applied while
@@ -982,7 +934,9 @@ void CTFFlameThrower::FireAirBlast( int iAmmoPerShot )
 		vDashDir.z = 0.0f;
 		VectorNormalize( vDashDir );
 
-		DeflectPlayer( pOwner, pOwner, vDashDir );
+		Vector vCenter = pOwner->WorldSpaceCenter();
+		Vector vSize = GetDeflectionSize();
+		DeflectPlayer( pOwner, pOwner, vDashDir, vCenter, vSize );
 	}
 
 	// for charged airblast
@@ -1057,7 +1011,6 @@ void CTFFlameThrower::SetWeaponState( int nWeaponState )
 			{
 				pOwner->m_Shared.RemoveCond( TF_COND_SPEED_BOOST );
 			}
-			m_flMinPrimaryAttackBurstTime = 0.f;
 		}
 
 		break;
@@ -1074,18 +1027,6 @@ void CTFFlameThrower::SetWeaponState( int nWeaponState )
 		}
 
 		break;
-	}
-
-	if ( m_hFlameManager )
-	{
-		if ( nWeaponState == FT_STATE_IDLE )
-		{
-			m_hFlameManager->StopFiring();
-		}
-		else
-		{
-			m_hFlameManager->StartFiring();
-		}
 	}
 
 	m_iWeaponState = nWeaponState;
@@ -1205,8 +1146,9 @@ void CTFFlameThrower::SecondaryAttack()
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
-float CTFFlameThrower::GetDeflectionRadius() const
-{
+Vector CTFFlameThrower::GetDeflectionSize()
+{ 
+	const Vector vecBaseDeflectionSize = BaseClass::GetDeflectionSize();
 	float fMultiplier = 1.0f;
 
 	// int iChargedAirblast = 0;
@@ -1223,7 +1165,7 @@ float CTFFlameThrower::GetDeflectionRadius() const
 	// Allow custom attributes to scale the deflection size.
 	CALL_ATTRIB_HOOK_FLOAT( fMultiplier, deflection_size_multiplier );
 
-	return fMultiplier * BaseClass::GetDeflectionRadius();
+	return vecBaseDeflectionSize * fMultiplier;
 }
 
 //-----------------------------------------------------------------------------
@@ -1590,7 +1532,7 @@ void CTFFlameThrower::ComputeCrayAirBlastForce( CTFPlayer *pTarget, CTFPlayer *p
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
-bool CTFFlameThrower::DeflectPlayer( CTFPlayer *pTarget, CTFPlayer *pOwner, Vector &vecForward )
+bool CTFFlameThrower::DeflectPlayer( CTFPlayer *pTarget, CTFPlayer *pOwner, Vector &vecForward, Vector &vecCenter, Vector &vecSize )
 {
 	if ( pTarget->GetTeamNumber() == pOwner->GetTeamNumber() && pTarget != pOwner )
 	{
@@ -1636,7 +1578,9 @@ bool CTFFlameThrower::DeflectPlayer( CTFPlayer *pTarget, CTFPlayer *pOwner, Vect
 	
 	if ( CanAirBlastPushPlayer() )
 	{
-		if ( pTarget->m_Shared.IsImmuneToPushback() )
+		// Quick-Fix Uber was the explicit pre-Jungle Inferno player
+		// airblast immunity.
+		if ( pTarget->m_Shared.InCond( TF_COND_IMMUNE_TO_PUSHBACK ) )
 			return false;
 
 		int iReverseBlast = 0;
@@ -1656,21 +1600,13 @@ bool CTFFlameThrower::DeflectPlayer( CTFPlayer *pTarget, CTFPlayer *pOwner, Vect
 			VectorNormalize( vecToTarget );
 		}
 
-		float flAirblastConeScale = 1.f;
+		// Pre-Jungle Inferno player aiming check. Players use the old
+		// forward dot-product threshold rather than the JI truncated cone.
+		float flDot = DotProduct( vecForward, vecToTarget );
+		float flAirblastConeScale = 0.2f;
 		CALL_ATTRIB_HOOK_FLOAT( flAirblastConeScale, mult_airblast_cone_scale );
-
-		truncatedcone_t testCone;
-		testCone.origin	= pOwner->EyePosition();
-		testCone.normal	= vecForward;
-		testCone.h		= 2.f * GetDeflectionRadius(); // diameter of enum sphere
-		testCone.theta	= flAirblastConeScale * tf_flamethrower_airblast_cone_angle;
-
-
-		Vector vTargetAbsMins = pTarget->GetAbsOrigin() + pTarget->WorldAlignMins();
-		Vector vTargetAbsMaxs = pTarget->GetAbsOrigin() + pTarget->WorldAlignMaxs();
-
-		// Require our target be in a cone in front of us
-		if ( !physcollision->IsBoxIntersectingCone( vTargetAbsMins, vTargetAbsMaxs, testCone ) )
+		float flAirblastConeThreshold = Clamp( 1.0f - flAirblastConeScale, 0.0f, 1.0f );
+		if ( flDot < flAirblastConeThreshold )
 		{
 			return false;
 		}
@@ -1688,123 +1624,53 @@ bool CTFFlameThrower::DeflectPlayer( CTFPlayer *pTarget, CTFPlayer *pOwner, Vect
 
 		pTarget->SpeakConceptIfAllowed( MP_CONCEPT_DEFLECTED, "projectile:0,victim:1" );
 
-		//
-		// Apply force - Old & new modes
-		//
-
-		int nOldAirblast = 0;
-		if ( !nOldAirblast && tf_airblast_cray.GetBool() )
+		// Pre-Jungle Inferno airblast cancels the target's current velocity,
+		// pushes directly away from the Pyro/target line, and adds a fixed
+		// vertical component. It does not inherit Pyro/target momentum, use
+		// the Pyro's pitch, or apply the Jungle Inferno lost-footing logic.
+		if ( pTarget != pOwner )
 		{
-			// TODO This is not honoring some of the attributes of old airblast
-			Vector vecPushDirection;
-			Vector vecForce;
-			if ( !tf_airblast_cray_pitch_control.GetBool() )
-			{
-				QAngle angForward;
-				QAngle angToTarget;
-				VectorAngles( vecForward, angForward );
-				VectorAngles( vecToTarget, angToTarget );
-				angForward[YAW] = angToTarget[YAW];
-				AngleVectors( angForward, &vecPushDirection, nullptr, nullptr );
-			}
-			else
-			{
-				vecPushDirection = vecForward;
-			}
-
-			ComputeCrayAirBlastForce( pTarget, pOwner, vecPushDirection, /* out */ vecForce );
-
-			// This is bypassing ApplyGenericPushbackImpulse because it implements its own pushback logic.
-			pTarget->RemoveFlag( FL_ONGROUND );
-			pTarget->SetGroundEntity( NULL ); // We'll restick if necessary, but we want to bypass the gamemovement
-											  // requirements for un-sticking.
-			// Only apply stun if we're about to apply knocked into air initially
-			if ( !pTarget->m_Shared.InCond( TF_COND_KNOCKED_INTO_AIR ) )
-			{
-				int nNoStun = 0;
-				CALL_ATTRIB_HOOK_INT( nNoStun, airblast_pushback_no_stun );
-				if ( !nNoStun )
-				{
-					float flStunDuration = tf_airblast_cray_stun_duration.GetFloat();
-					float flStunAmount = tf_airblast_cray_stun_amount.GetFloat();
-					if ( flStunDuration > 0.f && flStunAmount > 0.f )
-						{ pTarget->m_Shared.StunPlayer( flStunDuration, flStunAmount, TF_STUN_MOVEMENT, pOwner ); }
-				}
-			}
-			float flLoseFooting = tf_airblast_cray_lose_footing_duration.GetFloat();
-			if ( flLoseFooting )
-				{ pTarget->m_Shared.AddCond( TF_COND_LOST_FOOTING, flLoseFooting ); }
-			pTarget->m_Shared.AddCond( TF_COND_AIR_CURRENT );
-			pTarget->m_Shared.AddCond( TF_COND_KNOCKED_INTO_AIR );
-			pTarget->ApplyAbsVelocityImpulse( vecForce );
-		}
-		else
-		{
-
-			//
-			// Old airblast, most of this logic is in ApplyGenericPushbackImpulse, which is used by other things, so
-			// keeping it working is fairly easy for now.
-			//
-
-			// Apply stun, unless they are already in the air (only when leaving ground for the first time)
-			int nNoStun = 0;
-			CALL_ATTRIB_HOOK_INT( nNoStun, airblast_pushback_no_stun );
-			if ( nNoStun == 0 )
-			{
-				if ( !pTarget->m_Shared.InCond( TF_COND_KNOCKED_INTO_AIR ) )
-				{
-					// Old airblast stun values
-					pTarget->m_Shared.StunPlayer( 0.5f, 1.f, TF_STUN_MOVEMENT, pOwner );
-				}
-			}
-
-			float flForce = AirBurstDamageForce( pTarget->WorldAlignSize(), 60, 6.f );
-
-			CALL_ATTRIB_HOOK_FLOAT( flForce, airblast_pushback_scale );
-
-#ifdef _DEBUG
-			Vector vecForce = vecToTarget * flForce * tf_pushbackscalescale.GetFloat();
-#else
-			Vector vecForce = vecToTarget * flForce;	
-#endif
-
-			if ( iReverseBlast )
-			{
-				vecForce = -vecForce;
-			}
-
-			float flVerticalPushbackScale = tf_flamethrower_burst_zvelocity.GetFloat();
-			if ( iReverseBlast )
-			{
-				// Don't give quite so big a vertical kick if we're sucking rather than blowing...
-				flVerticalPushbackScale *= 0.75f;
-			}
-
-			{
-				CALL_ATTRIB_HOOK_FLOAT( flVerticalPushbackScale, airblast_vertical_pushback_scale );
-			}
-
-#ifdef _DEBUG
-			vecForce.z += flVerticalPushbackScale * tf_pushbackscalescale_vertical.GetFloat();
-
-			/*
-			// Kyle says: this will force players off the ground for at least one frame.
-			//			  This is disabled on purpose right now to match previous flamethrower functionality.
-			if ( pTarget->GetFlags() & FL_ONGROUND )
-			{
-			vecForce.z += 268.3281572999747f;
-			}
-			*/
-#else
-			vecForce.z += flVerticalPushbackScale;
-#endif
-
-			// Old airblast only - stomp velocity before applying
 			pTarget->SetAbsVelocity( vec3_origin );
 
-			// Apply GenericPushback
-			pTarget->ApplyGenericPushbackImpulse( vecForce, pOwner );
+			int nNoStun = 0;
+			CALL_ATTRIB_HOOK_INT( nNoStun, airblast_pushback_no_stun );
+			if ( nNoStun == 0 && !pTarget->m_Shared.InCond( TF_COND_KNOCKED_INTO_AIR ) )
+			{
+				pTarget->m_Shared.StunPlayer( 0.5f, 1.f, TF_STUN_MOVEMENT, pOwner );
+			}
 		}
+
+		float flForce = AirBurstDamageForce( pTarget->WorldAlignSize(), 60, 6.f );
+		CALL_ATTRIB_HOOK_FLOAT( flForce, airblast_pushback_scale );
+
+#ifdef _DEBUG
+		Vector vecForce = vecToTarget * flForce * tf_pushbackscalescale.GetFloat();
+#else
+		Vector vecForce = vecToTarget * flForce;
+#endif
+
+		if ( iReverseBlast )
+		{
+			vecForce = -vecForce;
+		}
+
+		float flVerticalPushbackScale = tf_flamethrower_burst_zvelocity.GetFloat();
+		if ( iReverseBlast )
+		{
+			flVerticalPushbackScale *= 0.75f;
+		}
+		CALL_ATTRIB_HOOK_FLOAT( flVerticalPushbackScale, airblast_vertical_pushback_scale );
+
+#ifdef _DEBUG
+		vecForce.z += flVerticalPushbackScale * tf_pushbackscalescale_vertical.GetFloat();
+#else
+		vecForce.z += flVerticalPushbackScale;
+#endif
+
+		// Pre-Jungle Inferno player impulse helper: applies victim vulnerability
+		// attributes and the old grounded minimum-Z rule without the JI airborne
+		// conditions or momentum-reflection path.
+		pTarget->ApplyAirBlastImpulse( vecForce );
 
 
 		// Make sure we get credit for the airblast if the target falls to its death
@@ -1847,7 +1713,7 @@ void CTFFlameThrower::PlayDeflectionSound( bool bPlayer )
 //-----------------------------------------------------------------------------
 float CTFFlameThrower::GetInitialAfterburnDuration() const
 {
-	return tf_flamethrower_initial_afterburn_duration;
+	return 10.f;
 }
 
 //-----------------------------------------------------------------------------
@@ -1855,16 +1721,16 @@ float CTFFlameThrower::GetInitialAfterburnDuration() const
 //-----------------------------------------------------------------------------
 float CTFFlameThrower::GetAfterburnRateOnHit() const
 {
-	float flAfterburnDurationScale = 1.f;
-	CALL_ATTRIB_HOOK_FLOAT( flAfterburnDurationScale, afterburn_duration_mult );
-
-	return flAfterburnDurationScale * tf_flamethrower_afterburn_rate;
+	// Retained for compatibility with the current weapon base API. The
+	// pre-Jungle Inferno Burn() path refreshes the full duration instead
+	// of stacking a small amount per direct flame contact.
+	return 10.f;
 }
 
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
-bool CTFFlameThrower::DeflectEntity( CBaseEntity *pTarget, CTFPlayer *pOwner, Vector &vecForward )
+bool CTFFlameThrower::DeflectEntity( CBaseEntity *pTarget, CTFPlayer *pOwner, Vector &vecForward, Vector &vecCenter, Vector &vecSize )
 {
 	// pTarget shouldn't be player. Call DeflectPlayer instead
 	Assert( pTarget && !pTarget->IsPlayer() );
@@ -1919,7 +1785,7 @@ bool CTFFlameThrower::DeflectEntity( CBaseEntity *pTarget, CTFPlayer *pOwner, Ve
 		}
 	}
 
-	bool bDeflected = BaseClass::DeflectEntity( pTarget, pOwner, vecForward );
+	bool bDeflected = BaseClass::DeflectEntity( pTarget, pOwner, vecForward, vecCenter, vecSize );
 	if ( bDeflected )
 	{
 		int iAirblastTurnProjectileToAmmo = 0;
@@ -2087,18 +1953,23 @@ Vector CTFFlameThrower::GetMuzzlePosHelper( bool bVisualPos )
 {
 	Vector vecMuzzlePos = vec3_origin;
 	CTFPlayer *pOwner = GetTFPlayerOwner();
-	if ( pOwner ) 
+	if ( pOwner )
 	{
 		Vector vecForward, vecRight, vecUp;
-		AngleVectors( pOwner->GetNetworkEyeAngles(), &vecForward, &vecRight, &vecUp );
-		{
-			Vector vecOffset;
-			UTIL_StringToVector( vecOffset.Base(), tf_flamethrower_new_flame_offset.GetString() );
+		AngleVectors( pOwner->GetAbsAngles(), &vecForward, &vecRight, &vecUp );
 
-			vecOffset *= pOwner->GetModelScale();
-			vecMuzzlePos = pOwner->EyePosition() + vecOffset.x * vecForward + vecOffset.y * vecRight + vecOffset.z * vecUp;
+		vecMuzzlePos = pOwner->Weapon_ShootPosition();
+		vecMuzzlePos += vecRight * TF_FLAMETHROWER_MUZZLEPOS_RIGHT;
+
+		// The visual muzzle is used for the wall-obstruction trace. The
+		// actual damage flame starts back at the shoot position plus the
+		// lateral offset, matching the pre-Jungle Inferno implementation.
+		if ( bVisualPos )
+		{
+			vecMuzzlePos += vecForward * TF_FLAMETHROWER_MUZZLEPOS_FORWARD;
 		}
 	}
+
 	return vecMuzzlePos;
 }
 
@@ -3026,6 +2897,10 @@ void CTFFlameEntity::OnCollide( CBaseEntity *pOther )
 						pPlayerAttacker->AwardAchievement( ACHIEVEMENT_TF_PYRO_IGNITE_PLAYER_BEING_FLIPPED );
 					}
 				}
+
+				// Meet Your Match-era behavior retained by the September 2017
+				// flamethrower: direct flames reduce healing for two seconds.
+				pVictim->m_Shared.AddCond( TF_COND_HEALING_DEBUFF, 2.f, pAttacker );
 			}
 		}
 	}

@@ -607,6 +607,7 @@ public:
 	// Functions that intercept Base Calls for Attribute Checking
 	void ApplyAbsVelocityImpulse ( const Vector &vecImpulse );
 	bool ApplyPunchImpulseX ( float flImpulse );
+	void ApplyAirBlastImpulse( const Vector &vecImpulse );
 	void ApplyGenericPushbackImpulse( const Vector &vecImpulse, CTFPlayer *pAttacker );
 
 	void SetUseBossHealthBar( bool bUseBossHealthBar ) { m_bUseBossHealthBar = bUseBossHealthBar; }

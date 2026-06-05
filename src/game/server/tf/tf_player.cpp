@@ -2581,6 +2581,29 @@ void CTFPlayer::ApplyAbsVelocityImpulse( const Vector &vecImpulse )
 }
 
 //-----------------------------------------------------------------------------
+// Purpose: Pre-Jungle Inferno airblast impulse handling.
+//-----------------------------------------------------------------------------
+void CTFPlayer::ApplyAirBlastImpulse( const Vector &vecImpulse )
+{
+	Vector vecForce = vecImpulse;
+
+	float flScale = 1.0f;
+	CALL_ATTRIB_HOOK_FLOAT( flScale, airblast_vulnerability_multiplier );
+	vecForce *= flScale;
+
+	// Grounded victims receive enough vertical velocity to leave the ground.
+	if ( ( GetFlags() & FL_ONGROUND ) && vecForce.z < JUMP_MIN_SPEED )
+	{
+		vecForce.z = JUMP_MIN_SPEED;
+	}
+
+	CALL_ATTRIB_HOOK_FLOAT( vecForce.z, airblast_vertical_vulnerability_multiplier );
+
+	RemoveFlag( FL_ONGROUND );
+	ApplyAbsVelocityImpulse( vecForce );
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
 void CTFPlayer::ApplyGenericPushbackImpulse( const Vector &vecImpulse, CTFPlayer *pAttacker )

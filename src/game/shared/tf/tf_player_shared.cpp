@@ -2557,7 +2557,7 @@ void CTFPlayerShared::ConditionGameRulesThink( void )
 			// Burn the player (if not pyro, who does not take persistent burning damage)
 			if ( TF_CLASS_PYRO != m_pOuter->GetPlayerClass()->GetClassIndex() )
 			{
-				float flBurnDamage = TF_BURNING_DMG;
+				float flBurnDamage = 3.f; // Pre-Jungle Inferno: 3 damage per afterburn tick.
 				int nKillType = TF_DMG_CUSTOM_BURNING;
 
 				if ( m_hBurnWeapon )
@@ -5157,45 +5157,31 @@ void CTFPlayerShared::Burn( CTFPlayer *pAttacker, CTFWeaponBase *pWeapon, float 
 	if ( !m_pOuter->IsAlive() )
 		return;
 
-	//Don't ignite if I'm in phase mode.
+	// Don't ignite if I'm in phase mode.
 	if ( InCond( TF_COND_PHASE ) )
 		return;
 
-	// pyros don't burn persistently or take persistent burning damage, but we show brief burn effect so attacker can tell they hit
-	bool bVictimIsImmunePyro = ( TF_CLASS_PYRO ==  m_pOuter->GetPlayerClass()->GetClassIndex() );
-
-#ifdef DEBUG
-	static float s_flStartAfterburnTime = 0.f;
-	static float s_flReachMaxAfterburnTime = 0.f;
-#endif // DEBUG
+	// Pyros do not take persistent afterburn damage, but retain the brief
+	// visual feedback used by the pre-Jungle Inferno implementation.
+	bool bVictimIsImmunePyro = ( TF_CLASS_PYRO == m_pOuter->GetPlayerClass()->GetClassIndex() );
 
 	if ( !InCond( TF_COND_BURNING ) )
 	{
-		// Start burning
 		AddCond( TF_COND_BURNING, -1.f, pAttacker );
 		m_flFlameBurnTime = gpGlobals->curtime + TF_BURNING_FREQUENCY;
-		m_flAfterburnDuration = pWeapon ? pWeapon->GetInitialAfterburnDuration() : 0.f;
-		
-		// Reduces direct healing effectiveness
-		AddCond( TF_COND_HEALING_DEBUFF, m_flAfterburnDuration, pAttacker );
+		m_flAfterburnDuration = 0.f;
 
-		// let the attacker know he burned me
+		// Let the attacker know he burned me.
 		if ( pAttacker && !bVictimIsImmunePyro )
 		{
 			pAttacker->OnBurnOther( m_pOuter, pWeapon );
-
 			m_hOriginalBurnAttacker = pAttacker;
 		}
-
-#ifdef DEBUG
-		s_flStartAfterburnTime = gpGlobals->curtime;
-		s_flReachMaxAfterburnTime = 0.f;
-#endif // DEBUG
 	}
 
 	int bAfterburnImmunity = bVictimIsImmunePyro;
 
-	// Check my weapon
+	// Check my active weapon.
 	if ( !bAfterburnImmunity )
 	{
 		int nAfterburnImmunity = 0;
@@ -5204,17 +5190,15 @@ void CTFPlayerShared::Burn( CTFPlayer *pAttacker, CTFWeaponBase *pWeapon, float 
 		{
 			CALL_ATTRIB_HOOK_INT_ON_OTHER( pMyWeapon, nAfterburnImmunity, afterburn_immunity );
 		}
-
 		bAfterburnImmunity |= nAfterburnImmunity != 0;
 	}
 
-	// STAGING_SPY
 	if ( InCond( TF_COND_AFTERBURN_IMMUNE ) )
 	{
 		bAfterburnImmunity = true;
 	}
 
-	// Check demo shield
+	// Check the Demoman shield.
 	if ( !bAfterburnImmunity && IsShieldEquipped() )
 	{
 		int nAfterburnImmunity = 0;
@@ -5223,11 +5207,10 @@ void CTFPlayerShared::Burn( CTFPlayer *pAttacker, CTFWeaponBase *pWeapon, float 
 		{
 			CALL_ATTRIB_HOOK_INT_ON_OTHER( pWearableShield, nAfterburnImmunity, afterburn_immunity );
 		}
-
 		bAfterburnImmunity |= nAfterburnImmunity != 0;
 	}
-	
-	// Check sniper shields (e.g. Darwin's)
+
+	// Check Sniper shields such as Darwin's Danger Shield.
 	if ( !bAfterburnImmunity && m_pOuter->IsPlayerClass( TF_CLASS_SNIPER ) )
 	{
 		for ( int i = 0; i < m_pOuter->GetNumWearables(); ++i )
@@ -5246,51 +5229,42 @@ void CTFPlayerShared::Burn( CTFPlayer *pAttacker, CTFWeaponBase *pWeapon, float 
 		}
 	}
 
-	// check afterburn duration
-	float flFlameLife = pWeapon ? pWeapon->GetAfterburnRateOnHit() : 0.f;
+	float flFlameLife = tf_afterburn_max_duration;
 	if ( bAfterburnImmunity )
 	{
 		flFlameLife = TF_BURNING_FLAME_LIFE_PYRO;
 	}
-	else if ( flBurningTime > 0 )
+	else if ( flBurningTime > 0.f )
 	{
+		// Preserve explicit durations supplied by flares, arrows, bosses and
+		// other non-flamethrower burn sources.
 		flFlameLife = flBurningTime;
 	}
-	
+	else if ( pWeapon && FClassnameIs( pWeapon, "tf_weapon_particle_cannon" ) )
+	{
+		// Pre-JI Cow Mangler charged-shot afterburn duration.
+		flFlameLife = 6.f;
+	}
+
 	CALL_ATTRIB_HOOK_FLOAT_ON_OTHER( pWeapon, flFlameLife, mult_wpn_burntime );
 
-	// flame immunity will always have a fixed duration
 	if ( bAfterburnImmunity )
 	{
+		// Immune targets only show the short burn effect.
 		m_flAfterburnDuration = flFlameLife;
 	}
-	// otherwise stack the duration
 	else
 	{
-		m_flAfterburnDuration += flFlameLife;
+		// Pre-Jungle Inferno: contact immediately applies/refreshes the full
+		// duration. There is no 3-second start and no 0.4-second stacking.
+		m_flAfterburnDuration = MAX( m_flAfterburnDuration, flFlameLife );
 	}
 
 	m_flAfterburnDuration = Clamp( m_flAfterburnDuration, 0.f, tf_afterburn_max_duration );
-
-#ifdef DEBUG
-	if ( tf_afterburn_debug.GetBool() )
-	{
-		engine->Con_NPrintf( 1, "Added afterburn duration = %f", m_flAfterburnDuration );
-
-		if ( s_flReachMaxAfterburnTime == 0.f && m_flAfterburnDuration == tf_afterburn_max_duration )
-		{
-			s_flReachMaxAfterburnTime = gpGlobals->curtime;
-			DevMsg( "took %f seconds to reach max afterburn duration\n", s_flReachMaxAfterburnTime - s_flStartAfterburnTime );
-		}
-	}
-#endif // DEBUG
-
 	m_hBurnAttacker = pAttacker;
 	m_hBurnWeapon = pWeapon;
-
 #endif // GAME_DLL
 }
-
 
 //-----------------------------------------------------------------------------
 // Purpose: A non-TF Player burned us

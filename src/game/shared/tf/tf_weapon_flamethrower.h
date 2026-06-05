@@ -135,9 +135,9 @@ public:
 	void			SetHitTarget( void );
 	void			HitTargetThink( void );
 
-	virtual float	GetDeflectionRadius() const OVERRIDE;
-	virtual bool	DeflectPlayer( CTFPlayer *pTarget, CTFPlayer *pOwner, Vector &vecForward ) OVERRIDE;
-	virtual bool	DeflectEntity( CBaseEntity *pTarget, CTFPlayer *pOwner, Vector &vecForward ) OVERRIDE;
+	virtual Vector	GetDeflectionSize() OVERRIDE;
+	virtual bool	DeflectPlayer( CTFPlayer *pTarget, CTFPlayer *pOwner, Vector &vecForward, Vector &vecCenter, Vector &vecSize ) OVERRIDE;
+	virtual bool	DeflectEntity( CBaseEntity *pTarget, CTFPlayer *pOwner, Vector &vecForward, Vector &vecCenter, Vector &vecSize ) OVERRIDE;
 	virtual void	PlayDeflectionSound( bool bPlayer ) OVERRIDE;
 
 	virtual float	GetInitialAfterburnDuration() const OVERRIDE;

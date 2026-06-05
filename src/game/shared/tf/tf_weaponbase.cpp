@@ -5250,15 +5250,21 @@ bool CTFWeaponBase::DeflectProjectiles()
 	Vector vecEye = pOwner->EyePosition();
 	Vector vecForward, vecRight, vecUp;
 	AngleVectors( pOwner->EyeAngles(), &vecForward, &vecRight, &vecUp );
-	Vector vecCenter = vecEye + vecForward * GetDeflectionRadius();
+	Vector vecSize = GetDeflectionSize();
+	float flMaxElement = 0.0f;
+	for ( int i = 0; i < 3; ++i )
+	{
+		flMaxElement = MAX( flMaxElement, vecSize[i] );
+	}
+	Vector vecCenter = vecEye + vecForward * flMaxElement;
 
 	// Get a list of entities in the box defined by vecSize at VecCenter.
 	// We will then try to deflect everything in the box.
 	const int maxCollectedEntities = 64;
 	CBaseEntity	*pObjects[ maxCollectedEntities ];
-	int count = UTIL_EntitiesInSphere( pObjects, maxCollectedEntities, vecCenter, GetDeflectionRadius(), FL_CLIENT | FL_GRENADE );
+	int count = UTIL_EntitiesInBox( pObjects, maxCollectedEntities, vecCenter - vecSize, vecCenter + vecSize, FL_CLIENT | FL_GRENADE );
 
-	//NDebugOverlay::Sphere( vecCenter, GetDeflectionRadius(), 0, 255, 0, 40, 3 );
+//	NDebugOverlay::Box( vecCenter, -vecSize, vecSize, 0, 255, 0, 40, 3 );
 
 	bool bDeflected = false;
 	bool bDeflectedPlayer = false;
@@ -5274,13 +5280,13 @@ bool CTFWeaponBase::DeflectProjectiles()
 		if ( pObjects[i]->IsPlayer() && pObjects[i]->GetTeamNumber() == TEAM_SPECTATOR )
 			continue;
 
+		if ( !pObjects[i]->IsDeflectable() && !FClassnameIs( pObjects[i], "prop_physics" ) )
+			continue;
+
 		if ( pOwner->FVisible( pObjects[i], MASK_SOLID ) == false )
 			continue;
 
 		if ( bTruce && ( pObjects[i]->GetTeamNumber() == iEnemyTeam ) )
-			continue;
-
-		if ( !pObjects[i]->IsDeflectable() && !FClassnameIs( pObjects[i], "prop_physics" ) )
 			continue;
 
 		if ( pObjects[i]->IsPlayer() == true )
@@ -5288,14 +5294,14 @@ bool CTFWeaponBase::DeflectProjectiles()
 			CTFPlayer *pTarget = ToTFPlayer( pObjects[i] );
 			if ( pTarget )
 			{
-				bool bRes = DeflectPlayer( pTarget, pOwner, vecForward );
+				bool bRes = DeflectPlayer( pTarget, pOwner, vecForward, vecCenter, vecSize );
 				bDeflectedPlayer |= bRes;
 				bDeflected |= bRes;
 			}
 		}
 		else
 		{
-			bDeflected |= DeflectEntity( pObjects[i], pOwner, vecForward );
+			bDeflected |= DeflectEntity( pObjects[i], pOwner, vecForward, vecCenter, vecSize );
 		}
 	}
 
@@ -5313,7 +5319,7 @@ bool CTFWeaponBase::DeflectProjectiles()
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
-bool CTFWeaponBase::DeflectPlayer( CTFPlayer *pTarget, CTFPlayer *pOwner, Vector &vecForward )
+bool CTFWeaponBase::DeflectPlayer( CTFPlayer *pTarget, CTFPlayer *pOwner, Vector &vecForward, Vector &vecCenter, Vector &vecSize )
 {
 	return true;
 }
@@ -5355,7 +5361,7 @@ public:
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
-bool CTFWeaponBase::DeflectEntity( CBaseEntity *pTarget, CTFPlayer *pOwner, Vector &vecForward )
+bool CTFWeaponBase::DeflectEntity( CBaseEntity *pTarget, CTFPlayer *pOwner, Vector &vecForward, Vector &vecCenter, Vector &vecSize )
 {
 	Assert( pTarget );
 	Assert( pOwner );
@@ -5377,40 +5383,32 @@ bool CTFWeaponBase::DeflectEntity( CBaseEntity *pTarget, CTFPlayer *pOwner, Vect
 		return true;
 	}
 
-	int iAOEDeflection = 0;
-	CALL_ATTRIB_HOOK_INT( iAOEDeflection, aoe_deflection );
-	Vector vecDir;
-	if ( iAOEDeflection )
-	{
-		vecDir = pTarget->WorldSpaceCenter() - pOwner->WorldSpaceCenter();
-	}
-	else
-	{
-		CTraceFilterDeflection filter( pOwner, COLLISION_GROUP_NONE, pOwner->GetTeamNumber() );
-		trace_t tr;
-		UTIL_TraceLine( vecEye, vecEye + vecForward * MAX_TRACE_LENGTH, MASK_SOLID, &filter, &tr );
-		vecDir = tr.endpos - pTarget->WorldSpaceCenter();
-	}
+
+	AngularImpulse angularimp;
+
+	CTraceFilterDeflection filter( pOwner, COLLISION_GROUP_NONE, pOwner->GetTeamNumber() );
+	trace_t tr;
+	UTIL_TraceLine( vecEye, vecEye + vecForward * MAX_TRACE_LENGTH, MASK_SOLID, &filter, &tr );
+	Vector vecDir = pTarget->WorldSpaceCenter() - tr.endpos;
 	VectorNormalize( vecDir );
 
 	// Send the entity back where it came.
 	// If we want per-entity physical deflection behavior this could move into ::Deflected
 	IPhysicsObject *pPhysicsObject = pTarget->VPhysicsGetObject();
-	AngularImpulse angularimp;
 	if ( pPhysicsObject )
 	{
 		pPhysicsObject->GetVelocity( &vecVel, &angularimp );
 	}
 	float flVel = vecVel.Length();
-	vecVel = flVel * vecDir;
+	vecVel = -flVel * vecDir;
 	if ( pPhysicsObject )
 	{
 		if ( pPhysicsObject->IsMotionEnabled() == false )
 		{
-			vecDir = pTarget->WorldSpaceCenter() - pOwner->WorldSpaceCenter();
+			vecDir = pOwner->WorldSpaceCenter() - pTarget->WorldSpaceCenter();
 			VectorNormalize( vecDir );
 
-			vecVel = flVel * vecDir;
+			vecVel = -flVel * vecDir;
 		}
 
 		pPhysicsObject->EnableMotion( true );
@@ -5425,7 +5423,7 @@ bool CTFWeaponBase::DeflectEntity( CBaseEntity *pTarget, CTFPlayer *pOwner, Vect
 	pTarget->Deflected( pOwner, vecDir );
 
 	QAngle newAngles;
-	VectorAngles( vecDir, newAngles );
+	VectorAngles( -vecDir, newAngles );
 	pTarget->SetAbsAngles( newAngles );
 
 	pOwner->AwardAchievement( ACHIEVEMENT_TF_PYRO_REFLECT_PROJECTILES );

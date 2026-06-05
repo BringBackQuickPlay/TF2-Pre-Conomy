@@ -411,12 +411,12 @@ class CTFWeaponBase : public CBaseCombatWeapon, public IHasOwner, public IHasGen
 	virtual void	Use( CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value );
 
 	virtual bool	DeflectProjectiles();
-	virtual bool	DeflectPlayer( CTFPlayer *pTarget, CTFPlayer *pOwner, Vector &vecForward );
-	virtual bool	DeflectEntity( CBaseEntity *pTarget, CTFPlayer *pOwner, Vector &vecForward );
+	virtual bool	DeflectPlayer( CTFPlayer *pTarget, CTFPlayer *pOwner, Vector &vecForward, Vector &vecCenter, Vector &vecSize );
+	virtual bool	DeflectEntity( CBaseEntity *pTarget, CTFPlayer *pOwner, Vector &vecForward, Vector &vecCenter, Vector &vecSize );
 	static void		SendObjectDeflectedEvent( CTFPlayer *pNewOwner, CTFPlayer *pPrevOwner, int iWeaponID, CBaseAnimating *pObject );
 	static float	DeflectionForce( const Vector &size, float damage, float scale );
 	virtual void	PlayDeflectionSound( bool bPlayer ) {}
-	virtual float	GetDeflectionRadius() const { return 128.f; }
+	virtual Vector	GetDeflectionSize() { return Vector( 128, 128, 64 ); }
 
 	virtual float	GetJarateTime() { return 0.f; }
 
