@@ -1,10 +1,9 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 // tf_bot_engineer_patrol_nest.cpp
-// Engineer patrolling/searching between his nest and nearby friendly Engineer buildings
+// Engineer patrolling between his nest and a known friendly Engineer building
 
 #include "cbase.h"
 #include "nav_mesh.h"
-#include "nav_mesh/tf_nav_mesh.h"
 #include "tf_player.h"
 #include "tf_obj.h"
 #include "tf_obj_sentrygun.h"
@@ -17,30 +16,14 @@
 
 
 //---------------------------------------------------------------------------------------------
-CTFBotEngineerPatrolNest::CTFBotEngineerPatrolNest( void )
-{
-	m_mode = PATROL_MODE_SEARCH_FOR_FRIENDLY_BUILDINGS;
-	m_searchPhase = SEARCH_PHASE_SIDESTEP;
-	m_targetBuilding = NULL;
-	m_searchGoal = vec3_origin;
-	m_hasSearchGoal = false;
-	m_hasArrived = false;
-	m_shouldSpyCheck = false;
-	m_spyCheckShotsRemaining = 0;
-}
-
-
-//---------------------------------------------------------------------------------------------
 CTFBotEngineerPatrolNest::CTFBotEngineerPatrolNest( CBaseObject *targetBuilding )
 {
-	m_mode = PATROL_MODE_TARGET;
-	m_searchPhase = SEARCH_PHASE_SIDESTEP;
 	m_targetBuilding = targetBuilding;
-	m_searchGoal = vec3_origin;
-	m_hasSearchGoal = false;
+	m_homeSentry = NULL;
 	m_hasArrived = false;
 	m_shouldSpyCheck = false;
 	m_spyCheckShotsRemaining = 0;
+	m_spyCheckState = SPYCHECK_NONE;
 }
 
 
@@ -52,29 +35,14 @@ ActionResult< CTFBot > CTFBotEngineerPatrolNest::OnStart( CTFBot *me, Action< CT
 
 	m_repathTimer.Invalidate();
 	m_waitTimer.Invalidate();
-	m_spyCheckShotTimer.Invalidate();
+	m_giveUpTimer.Start( 15.0f );
+	m_spyCheckTimer.Invalidate();
 
+	m_homeSentry = (CObjectSentrygun *)me->GetObjectOfType( OBJ_SENTRYGUN );
 	m_hasArrived = false;
 	m_shouldSpyCheck = RandomInt( 1, 100 ) <= 25;
 	m_spyCheckShotsRemaining = m_shouldSpyCheck ? RandomInt( 1, 2 ) : 0;
-
-	if ( m_mode == PATROL_MODE_SEARCH_FOR_FRIENDLY_BUILDINGS )
-	{
-		// Search mode should visibly move to a nearby safe observation point first.
-		// Sidestepping is only a fallback/local adjustment, not the whole search.
-		m_searchPhase = SEARCH_PHASE_WANDER;
-		m_hasSearchGoal = SelectSearchGoal( me );
-		if ( !m_hasSearchGoal )
-		{
-			m_searchPhase = SEARCH_PHASE_SIDESTEP;
-			m_hasSearchGoal = SelectSearchGoal( me );
-		}
-		m_giveUpTimer.Start( 18.0f );
-	}
-	else
-	{
-		m_giveUpTimer.Start( 15.0f );
-	}
+	m_spyCheckState = m_shouldSpyCheck ? SPYCHECK_AIM : SPYCHECK_NONE;
 
 	return Continue();
 }
@@ -179,207 +147,6 @@ bool CTFBotEngineerPatrolNest::IsVisibleBuildingForEngineer( CTFBot *me, CBaseOb
 
 
 //---------------------------------------------------------------------------------------------
-CBaseObject *CTFBotEngineerPatrolNest::FindVisibleFriendlyNestTarget( CTFBot *me ) const
-{
-	CBaseObject *bestSentry = NULL;
-	CBaseObject *bestDispenser = NULL;
-	float bestSentryRange = FLT_MAX;
-	float bestDispenserRange = FLT_MAX;
-
-	CBaseEntity *ent = NULL;
-	while ( ( ent = gEntList.FindEntityByClassname( ent, "obj_sentrygun" ) ) != NULL )
-	{
-		CObjectSentrygun *sentry = dynamic_cast< CObjectSentrygun * >( ent );
-		if ( !sentry )
-			continue;
-
-		if ( !IsTargetValid( me, sentry ) )
-			continue;
-
-		if ( sentry->IsMiniBuilding() )
-			continue;
-
-		if ( !IsVisibleBuildingForEngineer( me, sentry ) )
-			continue;
-
-		float range = me->GetDistanceBetween( sentry );
-		if ( range < bestSentryRange )
-		{
-			bestSentry = sentry;
-			bestSentryRange = range;
-		}
-	}
-
-	ent = NULL;
-	while ( ( ent = gEntList.FindEntityByClassname( ent, "obj_dispenser" ) ) != NULL )
-	{
-		CObjectDispenser *dispenser = dynamic_cast< CObjectDispenser * >( ent );
-		if ( !dispenser )
-			continue;
-
-		if ( !IsTargetValid( me, dispenser ) )
-			continue;
-
-		if ( !IsVisibleBuildingForEngineer( me, dispenser ) )
-			continue;
-
-		float range = me->GetDistanceBetween( dispenser );
-		if ( range < bestDispenserRange )
-		{
-			bestDispenser = dispenser;
-			bestDispenserRange = range;
-		}
-	}
-
-	if ( bestSentry && bestDispenser )
-	{
-		if ( RandomInt( 1, 100 ) <= 25 )
-			return bestSentry;
-
-		return bestDispenser;
-	}
-
-	if ( bestSentry )
-		return bestSentry;
-
-	return bestDispenser;
-}
-
-
-//---------------------------------------------------------------------------------------------
-bool CTFBotEngineerPatrolNest::SelectSearchGoal( CTFBot *me )
-{
-	if ( !me )
-		return false;
-
-	if ( m_searchPhase == SEARCH_PHASE_SIDESTEP )
-	{
-		Vector forward;
-		me->EyeVectors( &forward );
-		forward.z = 0.0f;
-		if ( forward.NormalizeInPlace() <= 0.0f )
-		{
-			forward = Vector( 1.0f, 0.0f, 0.0f );
-		}
-
-		Vector right( -forward.y, forward.x, 0.0f );
-		if ( RandomInt( 0, 1 ) == 0 )
-		{
-			right *= -1.0f;
-		}
-
-		m_searchGoal = me->GetAbsOrigin() + right * 66.0f;
-		m_path.Invalidate();
-		m_repathTimer.Invalidate();
-		return true;
-	}
-
-	CUtlVector< CNavArea * > nearbyVector;
-	CollectSurroundingAreas( &nearbyVector, me->GetLastKnownArea(), 600.0f, me->GetLocomotionInterface()->GetStepHeight(), me->GetLocomotionInterface()->GetStepHeight() );
-
-	if ( nearbyVector.Count() <= 0 )
-		return false;
-
-	int myTeam = me->GetTeamNumber();
-	int enemyTeam = GetEnemyTeam( myTeam );
-
-	CUtlVector< CTFNavArea * > candidateVector;
-	for ( int i = 0; i < nearbyVector.Count(); ++i )
-	{
-		CTFNavArea *area = (CTFNavArea *)nearbyVector[i];
-		if ( !area )
-			continue;
-
-		// Do not pick our current little patch. The point is to change sightlines.
-		if ( area->GetCenter().DistToSqr( me->GetAbsOrigin() ) < 200.0f * 200.0f )
-			continue;
-
-		float myIncursion = area->GetIncursionDistance( myTeam );
-		float enemyIncursion = area->GetIncursionDistance( enemyTeam );
-
-		// Respect battle lines when both teams have valid incursion data.
-		// If the enemy reaches this area much earlier than us, skip it.
-		if ( myIncursion >= 0.0f && enemyIncursion >= 0.0f && myIncursion > enemyIncursion + 300.0f )
-			continue;
-
-		candidateVector.AddToTail( area );
-	}
-
-	if ( candidateVector.Count() <= 0 )
-		return false;
-
-	CTFNavArea *chosenArea = candidateVector[ RandomInt( 0, candidateVector.Count() - 1 ) ];
-	m_searchGoal = chosenArea->GetRandomPoint();
-	m_path.Invalidate();
-	m_repathTimer.Invalidate();
-
-	return true;
-}
-
-
-//---------------------------------------------------------------------------------------------
-bool CTFBotEngineerPatrolNest::UpdateSearchForFriendlyBuildings( CTFBot *me )
-{
-	CBaseObject *target = FindVisibleFriendlyNestTarget( me );
-	if ( target )
-	{
-		m_targetBuilding = target;
-		m_mode = PATROL_MODE_TARGET;
-		m_hasArrived = false;
-		m_hasSearchGoal = false;
-		m_path.Invalidate();
-		m_repathTimer.Invalidate();
-		m_giveUpTimer.Start( 15.0f );
-		return true;
-	}
-
-	if ( MyImportantBuildingsNeedMe( me ) )
-		return false;
-
-	if ( m_giveUpTimer.IsElapsed() )
-		return false;
-
-	if ( !m_hasSearchGoal )
-		return false;
-
-	const float searchRange = 50.0f;
-	if ( me->GetAbsOrigin().DistToSqr( m_searchGoal ) <= searchRange * searchRange )
-	{
-		// After reaching a real search point, do a short left/right adjustment to open a new sightline,
-		// then pick another safe nearby search point until the give-up timer expires.
-		if ( m_searchPhase == SEARCH_PHASE_WANDER )
-		{
-			m_searchPhase = SEARCH_PHASE_SIDESTEP;
-			m_hasSearchGoal = SelectSearchGoal( me );
-			return m_hasSearchGoal;
-		}
-
-		m_searchPhase = SEARCH_PHASE_WANDER;
-		m_hasSearchGoal = SelectSearchGoal( me );
-		return m_hasSearchGoal;
-	}
-
-	if ( m_repathTimer.IsElapsed() )
-	{
-		m_repathTimer.Start( RandomFloat( 0.5f, 1.0f ) );
-
-		CBaseCombatWeapon *shotgun = me->Weapon_GetSlot( TF_WPN_TYPE_PRIMARY );
-		if ( shotgun )
-		{
-			me->Weapon_Switch( shotgun );
-		}
-
-		CTFBotPathCost cost( me, SAFEST_ROUTE );
-		m_path.Compute( me, m_searchGoal, cost );
-	}
-
-	me->StartLookingAroundForEnemies();
-	m_path.Update( me );
-	return true;
-}
-
-
-//---------------------------------------------------------------------------------------------
 CTFPlayer *CTFBotEngineerPatrolNest::FindFriendlyNonEngineerStandingOnBuilding( CTFBot *me, CBaseObject *target ) const
 {
 	if ( !me || !target )
@@ -453,47 +220,77 @@ Vector CTFBotEngineerPatrolNest::GetSpyCheckAimSpot( CTFBot *me, CBaseObject *ta
 
 
 //---------------------------------------------------------------------------------------------
-bool CTFBotEngineerPatrolNest::SpyCheckBuilding( CTFBot *me, CBaseObject *target )
+bool CTFBotEngineerPatrolNest::UpdateSpyCheck( CTFBot *me, CBaseObject *target )
 {
 	if ( !me || !target )
 		return false;
 
-	if ( m_spyCheckShotsRemaining <= 0 )
+	if ( m_spyCheckState == SPYCHECK_NONE || m_spyCheckState == SPYCHECK_DONE )
 		return false;
 
 	CBaseCombatWeapon *shotgun = me->Weapon_GetSlot( TF_WPN_TYPE_PRIMARY );
 	if ( !shotgun )
+	{
+		m_spyCheckState = SPYCHECK_DONE;
 		return false;
+	}
 
 	me->Weapon_Switch( shotgun );
-
-	Vector aimSpot = GetSpyCheckAimSpot( me, target );
-
 	me->StopLookingAroundForEnemies();
-	me->GetBodyInterface()->AimHeadTowards( aimSpot, IBody::CRITICAL, 0.25f, NULL, "Spy-check friendly Engineer nest" );
+	me->GetBodyInterface()->AimHeadTowards( GetSpyCheckAimSpot( me, target ), IBody::CRITICAL, 0.25f, NULL, "Spy-check friendly Engineer nest" );
 
-	if ( m_spyCheckShotTimer.IsElapsed() )
+	if ( m_spyCheckState == SPYCHECK_AIM )
+	{
+		if ( !m_spyCheckTimer.HasStarted() )
+		{
+			m_spyCheckTimer.Start( 0.20f );
+		}
+
+		if ( m_spyCheckTimer.IsElapsed() )
+		{
+			m_spyCheckState = SPYCHECK_FIRE;
+			m_spyCheckTimer.Invalidate();
+		}
+
+		return true;
+	}
+
+	if ( m_spyCheckState == SPYCHECK_FIRE )
 	{
 		me->PressFireButton();
 		--m_spyCheckShotsRemaining;
-		m_spyCheckShotTimer.Start( RandomFloat( 0.30f, 0.50f ) );
+
+		if ( m_spyCheckShotsRemaining <= 0 )
+		{
+			m_spyCheckState = SPYCHECK_DONE;
+		}
+		else
+		{
+			m_spyCheckState = SPYCHECK_WAIT_BETWEEN_SHOTS;
+			m_spyCheckTimer.Start( RandomFloat( 0.35f, 0.55f ) );
+		}
+
+		return true;
 	}
 
-	return true;
+	if ( m_spyCheckState == SPYCHECK_WAIT_BETWEEN_SHOTS )
+	{
+		if ( m_spyCheckTimer.IsElapsed() )
+		{
+			m_spyCheckState = SPYCHECK_AIM;
+			m_spyCheckTimer.Invalidate();
+		}
+
+		return true;
+	}
+
+	return false;
 }
 
 
 //---------------------------------------------------------------------------------------------
 ActionResult< CTFBot > CTFBotEngineerPatrolNest::Update( CTFBot *me, float interval )
 {
-	if ( m_mode == PATROL_MODE_SEARCH_FOR_FRIENDLY_BUILDINGS )
-	{
-		if ( UpdateSearchForFriendlyBuildings( me ) )
-			return Continue();
-
-		return Done( "Finished searching for friendly Engineer buildings" );
-	}
-
 	CBaseObject *target = m_targetBuilding.Get();
 	if ( !IsTargetValid( me, target ) )
 		return Done( "No valid friendly nest patrol target" );
@@ -540,9 +337,9 @@ ActionResult< CTFBot > CTFBotEngineerPatrolNest::Update( CTFBot *me, float inter
 		m_waitTimer.Start( RandomFloat( 8.0f, 15.0f ) );
 	}
 
-	if ( m_shouldSpyCheck && m_spyCheckShotsRemaining > 0 )
+	if ( m_shouldSpyCheck && m_spyCheckShotsRemaining > 0 && m_spyCheckState != SPYCHECK_DONE )
 	{
-		SpyCheckBuilding( me, target );
+		UpdateSpyCheck( me, target );
 		return Continue();
 	}
 

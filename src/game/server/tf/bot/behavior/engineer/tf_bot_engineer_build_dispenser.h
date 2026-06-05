@@ -22,7 +22,9 @@ private:
 	CountdownTimer m_searchTimer;
 	CountdownTimer m_getAmmoTimer;
 	CountdownTimer m_repathTimer;
+	CountdownTimer m_failedMiniSentryLookTimer;
 
+	bool m_hasLookedAroundAfterMiniSentryDispenserFailure;
 	int m_placementTriesLeft;
 	PathFollower m_path;
 };

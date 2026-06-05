@@ -57,6 +57,7 @@ private:
 	bool IsBuildingRecentlyAttacked( CBaseObject *obj, float time ) const;
 	bool IsRepairNeeded( CBaseObject *obj ) const;
 	bool IsUpgradeNeeded( CBaseObject *obj ) const;
+	bool NeedsMetalToWorkOnBuilding( CBaseObject *obj ) const;
 	bool ShouldCollectMetalForFriendlyBuildingWork( CTFBot *me, CBaseObject *target ) const;
 
 	CObjectDispenser *FindNearbyDamagedFriendlyDispenser( CTFBot *me, CBaseObject *target ) const;

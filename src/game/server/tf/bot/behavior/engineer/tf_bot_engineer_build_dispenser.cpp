@@ -24,6 +24,8 @@ extern ConVar tf_bot_path_lookahead_range;
 ActionResult< CTFBot >	CTFBotEngineerBuildDispenser::OnStart( CTFBot *me, Action< CTFBot > *priorAction )
 {
 	m_placementTriesLeft = 3;
+	m_hasLookedAroundAfterMiniSentryDispenserFailure = false;
+	m_failedMiniSentryLookTimer.Invalidate();
 	return Continue();
 }
 
@@ -86,6 +88,30 @@ ActionResult< CTFBot >	CTFBotEngineerBuildDispenser::Update( CTFBot *me, float i
 
 	if ( m_placementTriesLeft <= 0 )
 	{
+		// If we are using a mini-sentry, don't stare at the builder forever after
+		// failing dispenser placement. Pull out the shotgun briefly, look around,
+		// then let EngineerBuilding resume and retry later.
+		if ( mySentry->IsMiniBuilding() )
+		{
+			if ( !m_hasLookedAroundAfterMiniSentryDispenserFailure )
+			{
+				m_hasLookedAroundAfterMiniSentryDispenserFailure = true;
+				m_failedMiniSentryLookTimer.Start( RandomFloat( 1.0f, 2.0f ) );
+			}
+
+			if ( !m_failedMiniSentryLookTimer.IsElapsed() )
+			{
+				CBaseCombatWeapon *shotgun = me->Weapon_GetSlot( TF_WPN_TYPE_PRIMARY );
+				if ( shotgun )
+				{
+					me->Weapon_Switch( shotgun );
+				}
+
+				me->StartLookingAroundForEnemies();
+				return Continue();
+			}
+		}
+
 		return Done( "Can't find a place to build a Dispenser" );
 	}
 

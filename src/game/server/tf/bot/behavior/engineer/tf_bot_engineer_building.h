@@ -44,6 +44,7 @@ private:
 	CountdownTimer m_assistFriendlyBuildingTimer;
 	CountdownTimer m_patrolNestTimer;
 	CountdownTimer m_noFriendlyPatrolTargetTimer;
+	CountdownTimer m_localSpyCheckTimer;
 
 	struct FriendlySentryMemory
 	{
@@ -83,6 +84,7 @@ private:
 	CObjectSentrygun *FindRememberedFriendlySentry( CTFBot *me ) const;
 	CBaseObject *FindFriendlyBuildingAssistTarget( CTFBot *me ) const;
 	CBaseObject *FindFriendlyNestPatrolTarget( CTFBot *me ) const;
+	bool TryLocalSpyCheckOwnNest( CTFBot *me, CObjectSentrygun *mySentry, CObjectDispenser *myDispenser );
 
 	void UpgradeAndMaintainBuildings( CTFBot *me );
 	bool IsMetalSourceNearby( CTFBot *me ) const;

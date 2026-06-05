@@ -521,6 +521,8 @@ $Project "Server (TF Pre-Conomy)"
 						$File	"tf\bot\behavior\engineer\tf_bot_engineer_assist_friendly_building.h"
 						$File	"tf\bot\behavior\engineer\tf_bot_engineer_patrol_nest.cpp"
 						$File	"tf\bot\behavior\engineer\tf_bot_engineer_patrol_nest.h"
+						$File	"tf\bot\behavior\engineer\tf_bot_engineer_search_friendly_buildings.cpp"
+						$File	"tf\bot\behavior\engineer\tf_bot_engineer_search_friendly_buildings.h"
 						$File	"tf\bot\behavior\engineer\tf_bot_engineer_building.cpp"
 						$File	"tf\bot\behavior\engineer\tf_bot_engineer_building.h"
 					}

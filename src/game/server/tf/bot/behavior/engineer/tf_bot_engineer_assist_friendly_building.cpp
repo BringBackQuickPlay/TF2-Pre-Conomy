@@ -41,6 +41,7 @@ ActionResult< CTFBot > CTFBotEngineerAssistFriendlyBuilding::OnStart( CTFBot *me
 	m_stickyCheckTimer.Invalidate();
 	m_shotTimer.Invalidate();
 	m_getAmmoTimer.Invalidate();
+	m_getAmmoTimer.Invalidate();
 
 	m_hasArrived = false;
 	m_hasWhackedNearbyDispenser = false;
@@ -103,6 +104,28 @@ bool CTFBotEngineerAssistFriendlyBuilding::IsUpgradeNeeded( CBaseObject *obj ) c
 	return obj->GetUpgradeLevel() < 3;
 }
 
+//---------------------------------------------------------------------------------------------
+bool CTFBotEngineerAssistFriendlyBuilding::NeedsMetalToWorkOnBuilding( CBaseObject *obj ) const
+{
+	if ( !obj )
+		return false;
+
+	// Sapper/plasma handling is still useful even with no metal.
+	if ( obj->HasSapper() || obj->IsPlasmaDisabled() )
+		return false;
+
+	if ( obj->GetHealth() < obj->GetMaxHealth() )
+		return true;
+
+	if ( obj->IsBuilding() )
+		return true;
+
+	if ( IsUpgradeNeeded( obj ) )
+		return true;
+
+	return false;
+}
+
 
 //---------------------------------------------------------------------------------------------
 bool CTFBotEngineerAssistFriendlyBuilding::ShouldCollectMetalForFriendlyBuildingWork( CTFBot *me, CBaseObject *target ) const
@@ -110,7 +133,7 @@ bool CTFBotEngineerAssistFriendlyBuilding::ShouldCollectMetalForFriendlyBuilding
 	if ( !me || !target )
 		return false;
 
-	if ( !IsRepairNeeded( target ) && !IsUpgradeNeeded( target ) )
+	if ( !NeedsMetalToWorkOnBuilding( target ) )
 		return false;
 
 	// Metal is represented as Engineer ammo. The existing Engineer actions use IsAmmoLow()
@@ -434,6 +457,7 @@ ActionResult< CTFBot > CTFBotEngineerAssistFriendlyBuilding::OnResume( CTFBot *m
 {
 	m_path.Invalidate();
 	m_repathTimer.Invalidate();
+	m_getAmmoTimer.Invalidate();
 	m_giveUpTimer.Reset();
 
 	return Continue();

@@ -21,6 +21,7 @@
 #include "bot/behavior/engineer/tf_bot_engineer_build_dispenser.h"
 #include "bot/behavior/engineer/tf_bot_engineer_assist_friendly_building.h"
 #include "bot/behavior/engineer/tf_bot_engineer_patrol_nest.h"
+#include "bot/behavior/engineer/tf_bot_engineer_search_friendly_buildings.h"
 #include "bot/behavior/tf_bot_attack.h"
 #include "bot/behavior/tf_bot_get_ammo.h"
 #include "bot/map_entities/tf_bot_hint_teleporter_exit.h"
@@ -67,6 +68,7 @@ ActionResult< CTFBot >	CTFBotEngineerBuilding::OnStart( CTFBot *me, Action< CTFB
 	m_assistFriendlyBuildingTimer.Start( RandomFloat( 3.0f, 6.0f ) );
 	m_patrolNestTimer.Start( RandomFloat( 10.0f, 20.0f ) );
 	m_noFriendlyPatrolTargetTimer.Start( 30.0f );
+	m_localSpyCheckTimer.Start( RandomFloat( 4.0f, 8.0f ) );
 
 	for ( int i = 0; i < ARRAYSIZE( m_friendlySentryMemory ); ++i )
 	{
@@ -354,6 +356,59 @@ void CTFBotEngineerBuilding::RememberFriendlySentry( CTFBot *me, CObjectSentrygu
 }
 
 
+
+//---------------------------------------------------------------------------------------------
+static bool CanHearFriendlySentryNoise( CTFBot *me, CObjectSentrygun *sentry )
+{
+	if ( !me || !sentry )
+		return false;
+
+	const float maxHearRange = 512.0f;
+	float range = me->GetDistanceBetween( sentry );
+	if ( range > maxHearRange )
+		return false;
+
+	float noiseScore = 0.0f;
+
+	if ( sentry->GetTimeSinceLastFired() < 2.0f )
+		noiseScore += 55.0f;
+
+	if ( sentry->GetTarget() )
+		noiseScore += 25.0f;
+
+	if ( sentry->GetTimeSinceLastInjury() < 2.0f )
+		noiseScore += 20.0f;
+
+	if ( sentry->GetHealth() < sentry->GetMaxHealth() )
+		noiseScore += 10.0f;
+
+	if ( noiseScore <= 0.0f )
+		return false;
+
+	float distanceScale = 1.0f - ( range / maxHearRange );
+	noiseScore *= distanceScale;
+
+	const CKnownEntity *threat = me->GetVisionInterface()->GetPrimaryKnownThreat();
+	if ( threat && threat->IsVisibleRecently() )
+		noiseScore -= 20.0f;
+
+	if ( me->GetTimeSinceLastInjury() < 2.0f )
+		noiseScore -= 20.0f;
+
+	CBaseObject *myDispenser = me->GetObjectOfType( OBJ_DISPENSER );
+	if ( myDispenser && ( myDispenser->HasSapper() || myDispenser->IsPlasmaDisabled() || myDispenser->GetHealth() < myDispenser->GetMaxHealth() ) )
+		noiseScore -= 30.0f;
+
+	CObjectSentrygun *mySentry = (CObjectSentrygun *)me->GetObjectOfType( OBJ_SENTRYGUN );
+	if ( mySentry && !mySentry->IsMiniBuilding() && ( mySentry->HasSapper() || mySentry->IsPlasmaDisabled() || mySentry->GetHealth() < mySentry->GetMaxHealth() ) )
+		noiseScore -= 30.0f;
+
+	if ( noiseScore < 5.0f )
+		return false;
+
+	return RandomFloat( 0.0f, 100.0f ) <= noiseScore;
+}
+
 //---------------------------------------------------------------------------------------------
 void CTFBotEngineerBuilding::UpdateFriendlySentryMemory( CTFBot *me )
 {
@@ -372,10 +427,11 @@ void CTFBotEngineerBuilding::UpdateFriendlySentryMemory( CTFBot *me )
 		if ( sentry->IsMiniBuilding() )
 			continue;
 
-		if ( !IsVisibleBuildingForEngineer( me, sentry ) )
-			continue;
+		if ( IsVisibleBuildingForEngineer( me, sentry ) || CanHearFriendlySentryNoise( me, sentry ) )
+		{
+			RememberFriendlySentry( me, sentry );
+		}
 
-		RememberFriendlySentry( me, sentry );
 	}
 }
 
@@ -573,6 +629,127 @@ CBaseObject *CTFBotEngineerBuilding::FindFriendlyNestPatrolTarget( CTFBot *me ) 
 }
 
 
+
+//---------------------------------------------------------------------------------------------
+static CTFPlayer *FindFriendlyNonEngineerStandingOnBuildingForSpyCheck( CTFBot *me, CBaseObject *target )
+{
+	if ( !me || !target )
+		return NULL;
+
+	Vector mins, maxs;
+	target->CollisionProp()->WorldSpaceAABB( &mins, &maxs );
+
+	CTFPlayer *bestPlayer = NULL;
+	float bestRange = FLT_MAX;
+
+	for ( int i = 1; i <= gpGlobals->maxClients; ++i )
+	{
+		CTFPlayer *player = ToTFPlayer( UTIL_PlayerByIndex( i ) );
+		if ( !player )
+			continue;
+
+		if ( player == me )
+			continue;
+
+		if ( !player->IsAlive() )
+			continue;
+
+		if ( player->GetTeamNumber() != me->GetTeamNumber() )
+			continue;
+
+		if ( player->IsPlayerClass( TF_CLASS_ENGINEER ) )
+			continue;
+
+		Vector playerOrigin = player->GetAbsOrigin();
+		const float expand = 24.0f;
+
+		if ( playerOrigin.x < mins.x - expand || playerOrigin.x > maxs.x + expand )
+			continue;
+
+		if ( playerOrigin.y < mins.y - expand || playerOrigin.y > maxs.y + expand )
+			continue;
+
+		if ( playerOrigin.z < maxs.z - 8.0f || playerOrigin.z > maxs.z + 96.0f )
+			continue;
+
+		float range = me->GetDistanceBetween( player );
+		if ( range < bestRange )
+		{
+			bestPlayer = player;
+			bestRange = range;
+		}
+	}
+
+	return bestPlayer;
+}
+
+
+//---------------------------------------------------------------------------------------------
+static Vector GetBuildingTopSpyCheckAimSpot( CTFBot *me, CBaseObject *target )
+{
+	CTFPlayer *suspect = FindFriendlyNonEngineerStandingOnBuildingForSpyCheck( me, target );
+	if ( suspect )
+	{
+		return suspect->WorldSpaceCenter();
+	}
+
+	Vector mins, maxs;
+	target->CollisionProp()->WorldSpaceAABB( &mins, &maxs );
+
+	Vector aimSpot = ( mins + maxs ) / 2.0f;
+	aimSpot.z = maxs.z + 50.0f;
+
+	return aimSpot;
+}
+
+
+//---------------------------------------------------------------------------------------------
+bool CTFBotEngineerBuilding::TryLocalSpyCheckOwnNest( CTFBot *me, CObjectSentrygun *mySentry, CObjectDispenser *myDispenser )
+{
+	if ( !me )
+		return false;
+
+	if ( !m_localSpyCheckTimer.IsElapsed() )
+		return false;
+
+	m_localSpyCheckTimer.Start( RandomFloat( 5.0f, 11.0f ) );
+
+	// Don't make the Engineer fire constantly. This is just occasional paranoia.
+	if ( RandomInt( 1, 100 ) > 25 )
+		return false;
+
+	CBaseObject *target = NULL;
+
+	if ( myDispenser && mySentry && !mySentry->IsMiniBuilding() )
+	{
+		// Dispensers are usually behind the sentry and are better spy-check targets.
+		target = ( RandomInt( 1, 100 ) <= 75 ) ? (CBaseObject *)myDispenser : (CBaseObject *)mySentry;
+	}
+	else if ( myDispenser )
+	{
+		target = myDispenser;
+	}
+	else if ( mySentry && !mySentry->IsMiniBuilding() )
+	{
+		target = mySentry;
+	}
+
+	if ( !target )
+		return false;
+
+	CBaseCombatWeapon *shotgun = me->Weapon_GetSlot( TF_WPN_TYPE_PRIMARY );
+	if ( !shotgun )
+		return false;
+
+	me->Weapon_Switch( shotgun );
+	me->StopLookingAroundForEnemies();
+	me->GetBodyInterface()->AimHeadTowards( GetBuildingTopSpyCheckAimSpot( me, target ), IBody::CRITICAL, 0.25f, NULL, "Spy-check my Engineer nest" );
+	me->PressFireButton();
+
+	return true;
+}
+
+
 //---------------------------------------------------------------------------------------------
 // Everything is built, upgrade/maintain it
 // TODO: Upgrade/maintain nearby friendly buildings, too.
@@ -720,6 +897,11 @@ void CTFBotEngineerBuilding::UpgradeAndMaintainBuildings( CTFBot *me )
 			// mini-sentry has a target it's attacking and if it's close.
 			// if true, then attack the target of our mini-sentry.
 			if ( bImprovedMiniSentry && TryAttackMiniSentryTarget( me, mySentry ) )
+			{
+				return;
+			}
+
+			if ( TryLocalSpyCheckOwnNest( me, mySentry, myDispenser ) )
 			{
 				return;
 			}
@@ -1036,6 +1218,16 @@ ActionResult< CTFBot >	CTFBotEngineerBuilding::Update( CTFBot *me, float interva
 			}
 		}
 
+		// If we have failed to find a visible/remembered patrol target for long enough,
+		// actively search by walking to a safe nearby look-around point. This is the
+		// player-like fallback: no omniscience, just go somewhere and look.
+		if ( m_noFriendlyPatrolTargetTimer.IsElapsed() )
+		{
+			m_noFriendlyPatrolTargetTimer.Start( 30.0f );
+			m_patrolNestTimer.Start( RandomFloat( 8.0f, 14.0f ) );
+			return SuspendFor( new CTFBotEngineerSearchFriendlyBuildings, "Searching for friendly Engineer buildings" );
+		}
+
 		if ( m_patrolNestTimer.IsElapsed() )
 		{
 			m_patrolNestTimer.Start( RandomFloat( 10.0f, 20.0f ) );
@@ -1051,17 +1243,6 @@ ActionResult< CTFBot >	CTFBotEngineerBuilding::Update( CTFBot *me, float interva
 					return SuspendFor( new CTFBotEngineerPatrolNest( patrolTarget ), "Patrolling a friendly Engineer nest" );
 				}
 			}
-			else if ( m_noFriendlyPatrolTargetTimer.IsElapsed() )
-			{
-				m_noFriendlyPatrolTargetTimer.Start( 30.0f );
-				return SuspendFor( new CTFBotEngineerPatrolNest, "Searching for friendly Engineer buildings" );
-			}
-		}
-
-		if ( m_noFriendlyPatrolTargetTimer.IsElapsed() )
-		{
-			m_noFriendlyPatrolTargetTimer.Start( 30.0f );
-			return SuspendFor( new CTFBotEngineerPatrolNest, "Searching for friendly Engineer buildings" );
 		}
 	}
 
