@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+
     strategy:
       fail-fast: false
       matrix:
@@ -16,6 +17,7 @@ jobs:
             build_script: createallprojects.bat
             build_cmd: msbuild game.sln /p:Configuration=Release /p:Platform=win64 /m
             artifact_name: tf2pc-windows
+
           - os: ubuntu-latest
             build_script: ./buildallprojects
             build_cmd: ""
@@ -42,48 +44,63 @@ jobs:
         run: |
           sudo apt-get install -y g++-multilib ninja-build lib32z1-dev podman
 
-      - name: Setup MSBuild (Windows only)
+      - name: Setup MSBuild (Windows)
         if: runner.os == 'Windows'
         uses: microsoft/setup-msbuild@v2
 
-      - name: Generate project files (Windows)
-        run: ${{ matrix.build_script }}
-        shell: cmd
-        working-directory: src
+      - name: Generate normal Windows project files
         if: runner.os == 'Windows'
+        working-directory: src
+        shell: cmd
+        run: ${{ matrix.build_script }}
+
+      - name: Build normal Windows projects
+        if: runner.os == 'Windows'
+        working-directory: src
+        shell: cmd
+        run: ${{ matrix.build_cmd }}
+
+      - name: Generate Windows dedicated-server project files
+        if: runner.os == 'Windows'
+        working-directory: src
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+          & ".\creatededicatedserver.ps1"
+
+      - name: Build Windows dedicated server
+        if: runner.os == 'Windows'
+        working-directory: src
+        shell: cmd
+        run: msbuild dedicated.sln /p:Configuration=Release /p:Platform=win64 /m
 
       - name: Create ccache folder
-        run: mkdir -p /home/runner/.ccache
-        shell: bash
         if: runner.os == 'Linux'
+        shell: bash
+        run: mkdir -p /home/runner/.ccache
 
-      - name: Build (Linux)
-        run: ${{ matrix.build_script }}
+      - name: Build Linux projects
+        if: runner.os == 'Linux'
         working-directory: src
         shell: bash
-        if: runner.os == 'Linux'
+        run: ${{ matrix.build_script }}
 
-      - name: Clean and strip (Linux)
+      - name: Clean and strip Linux build
         if: runner.os == 'Linux'
+        shell: bash
         run: |
           find game/tf2pc/bin/linux64 -type f -executable -exec strip --strip-all {} +
           if [ -f game/tf2pc_linux64 ]; then
             strip --strip-all game/tf2pc_linux64
           fi
-        shell: bash
-
-      - name: Build (Windows only)
-        if: runner.os == 'Windows'
-        working-directory: src
-        run: ${{ matrix.build_cmd }}
 
       - name: Clean up Windows build
         if: runner.os == 'Windows'
-        run: |
-            for /r "game" %%f in (*.pdb) do del /q "%%f"
         shell: cmd
+        run: |
+          for /r "game" %%f in (*.pdb) do del /q "%%f"
 
-      - name: Upload Game Folder
+      - name: Upload game folder
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
