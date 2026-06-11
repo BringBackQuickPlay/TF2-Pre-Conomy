@@ -14,13 +14,15 @@ jobs:
       matrix:
         include:
           - os: windows-2025
-            build_script: createallprojects.bat
-            build_cmd: msbuild game.sln /p:Configuration=Release /p:Platform=win64 /m
+            target: windows-client
             artifact_name: tf2pc-windows
 
+          - os: windows-2025
+            target: windows-dedicated
+            artifact_name: tf2pc-windows-dedicated
+
           - os: ubuntu-latest
-            build_script: ./buildallprojects
-            build_cmd: ""
+            target: linux
             artifact_name: tf2pc-linux
 
     steps:
@@ -29,79 +31,199 @@ jobs:
         with:
           submodules: true
 
-      - name: Setup Python (Windows)
+      - name: Setup Python
         if: runner.os == 'Windows'
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
-      - name: Install Python (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y python3
-
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
+      - name: Install Linux dependencies
+        if: matrix.target == 'linux'
+        shell: bash
         run: |
-          sudo apt-get install -y g++-multilib ninja-build lib32z1-dev podman
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 \
+            g++-multilib \
+            ninja-build \
+            lib32z1-dev \
+            podman
 
-      - name: Setup MSBuild (Windows)
+      - name: Setup MSBuild
         if: runner.os == 'Windows'
         uses: microsoft/setup-msbuild@v2
 
-      - name: Generate normal Windows project files
-        if: runner.os == 'Windows'
+      # ------------------------------------------------------------
+      # Normal Windows client/server build
+      # ------------------------------------------------------------
+
+      - name: Generate normal Windows projects
+        if: matrix.target == 'windows-client'
         working-directory: src
         shell: cmd
-        run: ${{ matrix.build_script }}
+        run: createallprojects.bat
 
-      - name: Build normal Windows projects
-        if: runner.os == 'Windows'
-        working-directory: src
-        shell: cmd
-        run: ${{ matrix.build_cmd }}
-
-      - name: Generate Windows dedicated-server project files
-        if: runner.os == 'Windows'
+      - name: Verify normal Windows solution
+        if: matrix.target == 'windows-client'
         working-directory: src
         shell: powershell
         run: |
-          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-          & ".\creatededicatedserver.ps1"
+          if (-not (Test-Path -LiteralPath ".\game.sln"))
+          {
+              throw "createallprojects.bat did not generate src\game.sln."
+          }
 
-      - name: Build Windows dedicated server
-        if: runner.os == 'Windows'
+          Write-Host "Normal Windows solution exists:"
+          Write-Host "  $(Resolve-Path '.\game.sln')"
+
+      - name: Build normal Windows projects
+        if: matrix.target == 'windows-client'
         working-directory: src
         shell: cmd
-        run: msbuild dedicated.sln /p:Configuration=Release /p:Platform=win64 /m
+        run: >
+          msbuild game.sln
+          /p:Configuration=Release
+          /p:Platform=win64
+          /m
+
+      # ------------------------------------------------------------
+      # Windows dedicated-server build
+      #
+      # This runs in a separate matrix job with a clean checkout.
+      # It does not run createallprojects.bat first.
+      # ------------------------------------------------------------
+
+      - name: Generate Windows dedicated-server projects
+        if: matrix.target == 'windows-dedicated'
+        working-directory: src
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy `
+            -Scope Process `
+            -ExecutionPolicy Bypass
+
+          & ".\creatededicatedserver.ps1"
+
+      - name: Display generated dedicated-server projects
+        if: matrix.target == 'windows-dedicated'
+        working-directory: src
+        shell: powershell
+        run: |
+          Write-Host "Dedicated solution contents:"
+          Select-String `
+            -Path ".\dedicated.sln" `
+            -Pattern "\.vcxproj"
+
+          Write-Host ""
+          Write-Host "Generated dedicated project files:"
+
+          $requiredProjects = @(
+              ".\mathlib\mathlib_win64_srv.vcxproj",
+              ".\tier1\tier1_win64_srv.vcxproj",
+              ".\game\server\server_win64_srv_tf.vcxproj"
+          )
+
+          foreach ($project in $requiredProjects)
+          {
+              if (-not (Test-Path -LiteralPath $project))
+              {
+                  throw "Required project was not generated: $project"
+              }
+
+              Write-Host "  FOUND: $project"
+          }
+
+      - name: Verify DEDICATED preprocessor definition
+        if: matrix.target == 'windows-dedicated'
+        working-directory: src
+        shell: powershell
+        run: |
+          $projectPath = `
+            ".\game\server\server_win64_srv_tf.vcxproj"
+
+          $matches = Select-String `
+            -Path $projectPath `
+            -Pattern "DEDICATED"
+
+          if (-not $matches)
+          {
+              throw (
+                  "DEDICATED was not added to " +
+                  "server_win64_srv_tf.vcxproj."
+              )
+          }
+
+          $matches | ForEach-Object {
+              Write-Host $_.Line.Trim()
+          }
+
+      - name: Build Windows dedicated server
+        if: matrix.target == 'windows-dedicated'
+        working-directory: src
+        shell: cmd
+        run: >
+          msbuild dedicated.sln
+          /p:Configuration=Release
+          /p:Platform=win64
+          /m
+
+      # ------------------------------------------------------------
+      # Linux build
+      # ------------------------------------------------------------
 
       - name: Create ccache folder
-        if: runner.os == 'Linux'
+        if: matrix.target == 'linux'
         shell: bash
         run: mkdir -p /home/runner/.ccache
 
       - name: Build Linux projects
-        if: runner.os == 'Linux'
+        if: matrix.target == 'linux'
         working-directory: src
         shell: bash
-        run: ${{ matrix.build_script }}
+        run: ./buildallprojects
 
       - name: Clean and strip Linux build
-        if: runner.os == 'Linux'
+        if: matrix.target == 'linux'
         shell: bash
         run: |
-          find game/tf2pc/bin/linux64 -type f -executable -exec strip --strip-all {} +
+          if [ -d game/tf2pc/bin/linux64 ]; then
+            find game/tf2pc/bin/linux64 \
+              -type f \
+              -executable \
+              -exec strip --strip-all {} +
+          fi
+
           if [ -f game/tf2pc_linux64 ]; then
             strip --strip-all game/tf2pc_linux64
           fi
 
-      - name: Clean up Windows build
+      # ------------------------------------------------------------
+      # Artifact preparation
+      # ------------------------------------------------------------
+
+      - name: Clean up Windows debug files
         if: runner.os == 'Windows'
         shell: cmd
         run: |
           for /r "game" %%f in (*.pdb) do del /q "%%f"
+
+      - name: Display Windows build outputs
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Write-Host "DLL files under game:"
+          Get-ChildItem `
+            -Path ".\game" `
+            -Recurse `
+            -File `
+            -Include "*.dll" |
+            ForEach-Object {
+                Write-Host "  $($_.FullName)"
+            }
 
       - name: Upload game folder
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
           path: game/
+          if-no-files-found: error
