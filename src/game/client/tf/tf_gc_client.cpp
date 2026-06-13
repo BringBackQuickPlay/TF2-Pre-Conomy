@@ -40,6 +40,9 @@
 #include "steam/isteamuser.h"
 #include "mini_sha256.h"
 
+// TF2PC removable workaround for broken dedicated-server ServerCmdKeyValues.
+#include "tf2pc_keyvalues_command_transport_client.h"
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -557,8 +560,24 @@ void CTFGCClientSystem::WebapiInventoryThink()
 		// Add any server-specific fields so it knows what to do with the given inventory items (per-mod loadout may not match the user's real tf2 loadout)
 		SDK_AddServerInventoryInfo( kv, GetSOCache( SteamUser()->GetSteamID() ) );
 
-		// Send to the server
-		engine->ServerCmdKeyValues( kv );
+		// Send to the server. Keep Valve's original implementation intact and
+		// selectable so this workaround can be removed immediately after the
+		// dedicated engine's ServerCmdKeyValues path is fixed.
+		if ( TF2PCClientKeyValuesTransportEnabled() )
+		{
+			if ( !TF2PCServerCmdKeyValuesThroughCommandTransport( kv ) )
+			{
+				state.Backoff();
+				state.m_eState = kWebapiInventoryState_InventoryReceived;
+				return;
+			}
+		}
+		else
+		{
+			// Valve's original path. ServerCmdKeyValues takes ownership of kv.
+			engine->ServerCmdKeyValues( kv );
+		}
+
 		state.m_eState = kWebapiInventoryState_SentToServer;
 		break;
 	}

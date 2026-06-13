@@ -789,6 +789,8 @@ $Project "Server (TF Pre-Conomy)"
 			{
 				$File	"$SRCDIR\game\server\tf\tf_gc_server.cpp"
 				$File	"$SRCDIR\game\server\tf\tf_gc_server.h"
+				$File	"$SRCDIR\game\server\tf\tf2pc_keyvalues_command_transport_server.h"
+				$File	"$SRCDIR\game\shared\tf\tf2pc_keyvalues_command_transport_shared.h"
 				$File	"$SRCDIR\game\shared\lobby.cpp"
 				$File	"$SRCDIR\game\shared\lobby.h"
 				$File	"$SRCDIR\game\shared\tf\tf_lobby_server.cpp"

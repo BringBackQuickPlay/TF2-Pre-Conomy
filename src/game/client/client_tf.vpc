@@ -703,6 +703,8 @@ $Project "Client (TF Pre-Conomy)"
 			{
 				$File	"$SRCDIR\game\client\tf\tf_gc_client.cpp"
 				$File	"$SRCDIR\game\client\tf\tf_gc_client.h"
+				$File	"$SRCDIR\game\client\tf\tf2pc_keyvalues_command_transport_client.h"
+				$File	"$SRCDIR\game\shared\tf\tf2pc_keyvalues_command_transport_shared.h"
 				$File	"$SRCDIR\game\client\tf\tf_partyclient.cpp"
 				$File	"$SRCDIR\game\client\tf\tf_partyclient.h"
 				$File	"$SRCDIR\game\shared\party.cpp"
