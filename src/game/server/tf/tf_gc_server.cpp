@@ -34,6 +34,9 @@
 #include "tf_party.h"
 #include "iserver.h"
 
+// TF2PC removable workaround for broken dedicated-server ServerCmdKeyValues.
+#include "tf2pc_keyvalues_command_transport_server.h"
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -1275,6 +1278,9 @@ void CTFGCServerSystem::PostInitGC()
 //-----------------------------------------------------------------------------
 void CTFGCServerSystem::LevelShutdownPostEntity()
 {
+	// Clear any incomplete TF2PC transport before map-owned state disappears.
+	TF2PCClearAllKeyValuesTransportStates();
+
 	BaseClass::LevelShutdownPostEntity();
 }
 
@@ -1282,6 +1288,9 @@ void CTFGCServerSystem::LevelShutdownPostEntity()
 //-----------------------------------------------------------------------------
 void CTFGCServerSystem::Shutdown()
 {
+	// Wipe any transient serialized KeyValues data before subsystem shutdown.
+	TF2PCClearAllKeyValuesTransportStates();
+
 	BaseClass::Shutdown();
 
 	// Remove listener, if we have one
@@ -1347,6 +1356,9 @@ void CTFGCServerSystem::ClientConnected( CSteamID steamIDClient, edict_t *pEntit
 //-----------------------------------------------------------------------------
 void CTFGCServerSystem::ClientDisconnected( CSteamID steamIDClient )
 {
+	// A disconnected client must not leave a partial payload in memory.
+	TF2PCClearKeyValuesTransportForSteamID( steamIDClient );
+
 	if ( !steamIDClient.IsValid() || !steamIDClient.BIndividualAccount() )
 	{
 		Assert( steamIDClient.IsValid() );
